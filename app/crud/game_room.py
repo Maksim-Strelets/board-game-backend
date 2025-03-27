@@ -1,6 +1,6 @@
 # app/crud/game_room.py
 from sqlalchemy.orm import Session, joinedload
-from app.database.models import GameRoom, GameRoomPlayer, RoomStatus, BoardGame
+from app.database.models import GameRoom, GameRoomPlayer, RoomStatus, BoardGame, PlayerStatus
 from app.schemas.game_room import GameRoomCreate, GameRoomUpdate, RoomStatus as SchemaRoomStatus
 
 
@@ -91,9 +91,32 @@ def add_player_to_room(db: Session, room_id: int, user_id: int):
     # Create new room player
     db_room_player = GameRoomPlayer(
         room_id=room_id,
-        user_id=user_id
+        user_id=user_id,
+        status=PlayerStatus.NOT_READY,
     )
     db.add(db_room_player)
+    db.commit()
+    db.refresh(db_room_player)
+    return db_room_player
+
+
+def update_player_status(
+    db: Session,
+    room_id: int,
+    user_id: int,
+    new_status: PlayerStatus
+):
+    # Find the player in the room
+    db_room_player = db.query(GameRoomPlayer).filter(
+        GameRoomPlayer.room_id == room_id,
+        GameRoomPlayer.user_id == user_id
+    ).first()
+
+    if db_room_player is None:
+        raise ValueError("Player not found in room")
+
+    # Update player status
+    db_room_player.status = new_status.name
     db.commit()
     db.refresh(db_room_player)
     return db_room_player

@@ -13,6 +13,7 @@ from app.routes import (
     auth,
     board_games,
     game_rooms,
+    game_room_ws,
 )
 from app.config import settings
 
@@ -36,6 +37,7 @@ Base.metadata.create_all(bind=engine)
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
 app.include_router(board_games.router)
 app.include_router(game_rooms.router)
+app.include_router(game_room_ws.router)
 
 
 @cli.command()

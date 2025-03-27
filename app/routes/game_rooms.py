@@ -18,10 +18,12 @@ from app.schemas.game_room import (
     GameRoom,
     GameRoomCreate,
     GameRoomUpdate,
+    GameRoomPlayerResponse,
     GameRoomWithPlayers,
     GameRoomPlayerCreate,
     RoomStatus,
 )
+from app.schemas.user import UserResponse
 
 router = APIRouter(
     prefix="/board-games/{game_id}/rooms",
@@ -53,11 +55,19 @@ def read_game_rooms(game_id: int, skip: int = 0, limit: int = 100, db: Session =
             max_players=room.max_players,
             status=room.status,
             players=[
-                {
-                    'room_id': room.id,
-                    'user_id': player.user_id,
-                    'id': player.id
-                } for player in room.players
+                GameRoomPlayerResponse(
+                    room_id=room.id,
+                    user_id=player.user_id,
+                    id=player.id,
+                    status=player.status,
+                    user_data=UserResponse(
+                        id=player.user.id,
+                        email=player.user.email,
+                        username=player.user.username,
+                        is_active=player.user.is_active,
+                        created_at=player.user.created_at,
+                    )
+                ) for player in room.players
             ]
         )
         detailed_rooms.append(detailed_room)
@@ -79,11 +89,19 @@ def read_game_room(game_id: int, room_id: int, db: Session = Depends(get_db)):
         max_players=db_game_room.max_players,
         status=db_game_room.status,
         players=[
-            {
-                'room_id': db_game_room.id,
-                'user_id': player.user_id,
-                'id': player.id
-            } for player in db_game_room.players
+            GameRoomPlayerResponse(
+                room_id=db_game_room.id,
+                user_id=player.user_id,
+                id=player.id,
+                status=player.status,
+                user_data=UserResponse(
+                    id=player.user.id,
+                    email=player.user.email,
+                    username=player.user.username,
+                    is_active=player.user.is_active,
+                    created_at=player.user.created_at,
+                )
+            ) for player in db_game_room.players
         ]
     )
 

@@ -12,6 +12,11 @@ class RoomStatus(enum.Enum):
     ENDED = "ended"
 
 
+class PlayerStatus(enum.Enum):
+    READY = "ready"
+    NOT_READY = "not_ready"
+
+
 Base = declarative_base()
 
 
@@ -64,7 +69,8 @@ class GameRoomPlayer(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("game_rooms.id"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # Assuming users table exists
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    status = Column(Enum(PlayerStatus), default=PlayerStatus.NOT_READY, nullable=False)
 
     # Relationships
     room = relationship("GameRoom", back_populates="players")
