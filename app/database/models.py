@@ -78,3 +78,20 @@ class GameRoomPlayer(Base):
 
     def __repr__(self):
         return f"<GameRoomPlayer(room_id={self.room_id}, user_id={self.user_id})>"
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("game_rooms.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    content = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    room = relationship("GameRoom")
+    user = relationship("User")
+
+    def __repr__(self):
+        return f"<ChatMessage(id={self.id}, room_id={self.room_id}, user_id={self.user_id})>"

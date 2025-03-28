@@ -20,6 +20,8 @@ from app.schemas.game_room import (
     GameRoomPlayerResponse
 )
 from app.schemas.user import UserResponse  # Assuming you have a user schema
+from app.crud.chat_message import create_chat_message
+from app.schemas.chat_message import ChatMessageCreate, ChatMessageResponse
 
 router = APIRouter()
 
@@ -145,18 +147,46 @@ async def websocket_room_endpoint(
             message_type = data.get('type')
 
             if message_type == WebSocketMessageType.CHAT:
-                # Broadcast chat message with user details
-                chat_message = WebSocketMessage(
+                # Validate message content
+                message_content = data.get('message', '').strip()
+                if not message_content:
+                    continue
+
+                # Create chat message in database
+                chat_message_create = ChatMessageCreate(
+                    room_id=room_id,
+                    user_id=user_id,
+                    content=message_content
+                )
+                db_message = create_chat_message(db, chat_message_create)
+
+                # Convert to response schema
+                chat_message_response = ChatMessageResponse(
+                    id=db_message.id,
+                    room_id=db_message.room_id,
+                    user_id=db_message.user_id,
+                    content=db_message.content,
+                    timestamp=db_message.timestamp,
+                    user=UserResponse(
+                        id=user.id,
+                        email=user.email,
+                        username=user.username,
+                        is_active=user.is_active,
+                        created_at=user.created_at
+                    )
+                )
+
+                # Broadcast chat message with full details
+                chat_message_ws = WebSocketMessage(
                     type=WebSocketMessageType.CHAT,
                     user_id=user_id,
                     room_id=room_id,
                     user=user_public,
                     content={
-                        "message": data.get('message', ''),
-                        "timestamp": data.get('timestamp')
+                        "message": jsonable_encoder(chat_message_response)
                     }
                 )
-                await connection_manager.broadcast(room_id, chat_message.to_dict())
+                await connection_manager.broadcast(room_id, chat_message_ws.to_dict())
 
             elif message_type == WebSocketMessageType.GAME_ACTION:
                 # Broadcast game-specific actions with user details
