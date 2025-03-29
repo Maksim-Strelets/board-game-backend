@@ -8,7 +8,7 @@ import enum
 
 class RoomStatus(enum.Enum):
     WAITING = "waiting"
-    STARTED = "started"
+    IN_PROGRESS = "in_progress"
     ENDED = "ended"
 
 

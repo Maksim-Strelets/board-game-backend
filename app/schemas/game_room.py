@@ -7,13 +7,14 @@ from app.schemas.user import UserResponse
 
 class RoomStatus(str, Enum):
     WAITING = "waiting"
-    STARTED = "started"
+    IN_PROGRESS = "in_progress"
     ENDED = "ended"
 
 
 class PlayerStatus(str, Enum):
     READY = "ready"
     NOT_READY = "not_ready"
+    IN_GAME = "in_game"
 
 
 class GameRoomBase(BaseModel):

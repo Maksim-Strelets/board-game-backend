@@ -48,7 +48,7 @@ def update_game_room(db: Session, room_id: int, game_room: GameRoomUpdate):
         db_game_room.max_players = game_room.max_players
 
     if game_room.status is not None:
-        db_game_room.status = game_room.status
+        db_game_room.status = game_room.status.name
 
     db.commit()
     db.refresh(db_game_room)
@@ -98,6 +98,13 @@ def add_player_to_room(db: Session, room_id: int, user_id: int):
     db.commit()
     db.refresh(db_room_player)
     return db_room_player
+
+
+def get_room_player(db: Session, room_id: int, user_id: int):
+    return db.query(GameRoomPlayer).filter(
+        GameRoomPlayer.room_id == room_id,
+        GameRoomPlayer.user_id == user_id
+    ).first()
 
 
 def update_player_status(

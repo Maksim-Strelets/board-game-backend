@@ -10,14 +10,17 @@ from app.websockets.manager import connection_manager
 from app.crud.game_room import (
     get_game_room,
     add_player_to_room,
+    get_room_player,
     update_player_status,
     remove_player_from_room,
+    update_game_room,
 )
 from app.crud.user import get_user  # Assuming you have a user CRUD module
 from app.schemas.game_room import (
     RoomStatus,
     PlayerStatus,
-    GameRoomPlayerResponse
+    GameRoomPlayerResponse,
+    GameRoomUpdate,
 )
 from app.schemas.user import UserResponse  # Assuming you have a user schema
 from app.crud.chat_message import create_chat_message
@@ -96,9 +99,28 @@ async def websocket_room_endpoint(
         await websocket.close(code=4003, reason="User not found")
         return
 
+    is_player_in_room = user_id in [player.user_id for player in room.players]
+
+    if room.status != RoomStatus.WAITING and not is_player_in_room:
+        await websocket.close(code=4003, reason="Room is not available for user")
+        return
+
+    # Convert user to public schema
+    user_public = UserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        is_active=user.is_active,
+        created_at=user.created_at,
+    )
+
     try:
+
         # Add player to room
-        player_data = add_player_to_room(db, room_id, user_id)
+        if not is_player_in_room:
+            player_data = add_player_to_room(db, room_id, user_id)
+        else:
+            player_data = get_room_player(db, room_id, user_id)
 
         # Convert player data to schema
         player_response = GameRoomPlayerResponse(
@@ -115,29 +137,21 @@ async def websocket_room_endpoint(
             ),
         )
 
-        # Convert user to public schema
-        user_public = UserResponse(
-            id=user.id,
-            email=user.email,
-            username=user.username,
-            is_active=user.is_active,
-            created_at=user.created_at,
-        )
-
         # Connect to websocket
         await connection_manager.connect(websocket, room_id, user_id)
 
         # Broadcast user joined with user details
-        join_message = WebSocketMessage(
-            type=WebSocketMessageType.USER_JOINED,
-            user_id=user_id,
-            room_id=room_id,
-            user=user_public,
-            content={
-                "player": jsonable_encoder(player_response)
-            }
-        )
-        await connection_manager.broadcast(room_id, join_message.to_dict())
+        if not is_player_in_room:
+            join_message = WebSocketMessage(
+                type=WebSocketMessageType.USER_JOINED,
+                user_id=user_id,
+                room_id=room_id,
+                user=user_public,
+                content={
+                    "player": jsonable_encoder(player_response)
+                }
+            )
+            await connection_manager.broadcast(room_id, join_message.to_dict())
 
         # Main websocket communication loop
         while True:
@@ -205,6 +219,7 @@ async def websocket_room_endpoint(
             elif message_type == "room_status":
                 # Update room status (only if authorized)
                 new_status = data.get('status')
+                update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus(new_status)))
                 if new_status in [status.value for status in RoomStatus]:
                     # In a real app, add authorization check
                     status_message = WebSocketMessage(
@@ -247,16 +262,17 @@ async def websocket_room_endpoint(
         print(f"WebSocket error: {e}")
 
     finally:
-        # Remove player from room
-        remove_player_from_room(db, room_id, user_id)
-
         # Disconnect and broadcast user left with user details
         connection_manager.disconnect(websocket, room_id, user_id)
 
-        leave_message = WebSocketMessage(
-            type=WebSocketMessageType.USER_LEFT,
-            user_id=user_id,
-            room_id=room_id,
-            user=user_public
-        )
-        await connection_manager.broadcast(room_id, leave_message.to_dict())
+        # Remove player from room
+        if room.status == RoomStatus.WAITING:
+            remove_player_from_room(db, room_id, user_id)
+
+            leave_message = WebSocketMessage(
+                type=WebSocketMessageType.USER_LEFT,
+                user_id=user_id,
+                room_id=room_id,
+                user=user_public
+            )
+            await connection_manager.broadcast(room_id, leave_message.to_dict())
