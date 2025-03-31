@@ -17,12 +17,7 @@ class Settings(BaseSettings):
     RELOAD: bool = env.bool("RELOAD", default=False)
 
     # CORS Settings
-    CORS_ORIGINS: list[str] = [
-        "http://localhost:3000",  # React default
-        "http://127.0.0.1:3000",
-        "https://localhost:3000",
-        "http://localhost:8000",  # Potential backend dev server
-    ]
+    CORS_ORIGINS: list[str] = ["*"]
     CORS_ALLOW_CREDENTIALS: bool = True
     CORS_ALLOW_METHODS: list[str] = ["*"]
     CORS_ALLOW_HEADERS: list[str] = ["*"]

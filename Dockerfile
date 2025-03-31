@@ -1,0 +1,19 @@
+# backend/Dockerfile
+FROM python:3.9
+
+WORKDIR /app
+
+# Install pipenv
+RUN pip install pipenv
+
+# Copy Pipfile and Pipfile.lock
+COPY Pipfile Pipfile.lock ./
+
+# Install dependencies
+RUN pipenv install --system --deploy
+
+# Copy the rest of the application
+COPY . .
+
+# Command to run the application
+CMD ["uvicorn", "main:app"]

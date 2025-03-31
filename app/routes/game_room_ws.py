@@ -26,7 +26,20 @@ from app.schemas.user import UserResponse  # Assuming you have a user schema
 from app.crud.chat_message import create_chat_message
 from app.schemas.chat_message import ChatMessageCreate, ChatMessageResponse
 
+from app.games.game_manager_factory import GameManagerFactory
+from app.games.abstract_game import AbstractGameManager
+
 router = APIRouter()
+
+
+class GameWebSocketMessageType:
+    GAME_STATE = "game_state"
+    GAME_UPDATE = "game_update"
+    GAME_MOVE = "game_move"
+    GAME_ERROR = "game_error"
+
+
+active_games: Dict[int, AbstractGameManager] = {}
 
 
 class WebSocketMessageType:
@@ -216,23 +229,6 @@ async def websocket_room_endpoint(
                 )
                 await connection_manager.broadcast(room_id, game_action_message.to_dict())
 
-            elif message_type == "room_status":
-                # Update room status (only if authorized)
-                new_status = data.get('status')
-                update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus(new_status)))
-                if new_status in [status.value for status in RoomStatus]:
-                    # In a real app, add authorization check
-                    status_message = WebSocketMessage(
-                        type=WebSocketMessageType.ROOM_STATUS_CHANGED,
-                        user_id=user_id,
-                        room_id=room_id,
-                        user=user_public,
-                        content={
-                            "status": new_status
-                        }
-                    )
-                    await connection_manager.broadcast(room_id, status_message.to_dict())
-
             elif message_type == "player_status":
                 # Update player status
                 new_status = data.get('status')
@@ -257,6 +253,93 @@ async def websocket_room_endpoint(
                         }
                     )
                     await connection_manager.broadcast(room_id, status_change_message.to_dict())
+
+            elif message_type == "room_status":
+                # Update room status (only if authorized)
+                new_status = data.get('status')
+                update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus(new_status)))
+                if new_status in [status.value for status in RoomStatus]:
+                    # In a real app, add authorization check
+                    status_message = WebSocketMessage(
+                        type=WebSocketMessageType.ROOM_STATUS_CHANGED,
+                        user_id=user_id,
+                        room_id=room_id,
+                        user=user_public,
+                        content={
+                            "status": new_status
+                        }
+                    )
+                    await connection_manager.broadcast(room_id, status_message.to_dict())
+
+                    # Initialize game when status changes to in_progress
+                    if new_status == RoomStatus.IN_PROGRESS:
+                        # Get room data to determine players
+                        room = get_game_room(db, room_id)
+                        player_ids = [player.user_id for player in room.players]
+
+                        # Create game manager instance
+                        game_manager = GameManagerFactory.create_game_manager(room.game_id, room_id, player_ids)
+
+                        if game_manager:
+                            # Initialize the game
+                            initial_state = game_manager.initialize_game()
+
+                            # Store the game manager
+                            active_games[room_id] = game_manager
+
+                            # Broadcast initial game state
+                            await connection_manager.broadcast(room_id, {
+                                "type": GameWebSocketMessageType.GAME_STATE,
+                                "state": initial_state
+                            })
+                        else:
+                            # Game not supported
+                            await connection_manager.broadcast(room_id, {
+                                "type": GameWebSocketMessageType.GAME_ERROR,
+                                "message": f"Game {room.game_id} not supported"
+                            })
+
+            elif message_type == "get_game_state":
+                # Check if game is active
+                if room_id in active_games:
+                    game_state = active_games[room_id].get_state()
+                    await websocket.send_json({
+                        "type": GameWebSocketMessageType.GAME_STATE,
+                        "state": game_state
+                    })
+                else:
+                    await websocket.send_json({
+                        "type": GameWebSocketMessageType.GAME_ERROR,
+                        "message": "Game not started yet"
+                    })
+
+            elif message_type == GameWebSocketMessageType.GAME_MOVE:
+                # Process game move
+                if room_id not in active_games:
+                    await websocket.send_json({
+                        "type": GameWebSocketMessageType.GAME_ERROR,
+                        "message": "Game not started yet"
+                    })
+                    continue
+
+                # Get the move data from the message
+                move_data = data.get('move', {})
+
+                # Process the move
+                success, error_message, updated_state = active_games[room_id].process_move(user_id, move_data)
+
+                if not success:
+                    await websocket.send_json({
+                        "type": GameWebSocketMessageType.GAME_ERROR,
+                        "message": error_message
+                    })
+                    continue
+
+                # Broadcast game update to all players
+                await connection_manager.broadcast(room_id, {
+                    "type": GameWebSocketMessageType.GAME_UPDATE,
+                    "state": updated_state
+                })
 
     except Exception as e:
         print(f"WebSocket error: {e}")
