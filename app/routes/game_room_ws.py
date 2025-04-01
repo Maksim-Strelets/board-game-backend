@@ -284,7 +284,7 @@ async def websocket_room_endpoint(
 
                         if game_manager:
                             # Initialize the game
-                            initial_state = game_manager.initialize_game()
+                            game_manager.initialize_game()
 
                             for player in room.players:
                                 new_status = PlayerStatus.IN_GAME
@@ -305,10 +305,11 @@ async def websocket_room_endpoint(
                             active_games[room_id] = game_manager
 
                             # Broadcast initial game state
-                            await connection_manager.broadcast(room_id, {
-                                "type": GameWebSocketMessageType.GAME_STATE,
-                                "state": jsonable_encoder(initial_state),
-                            })
+                            for player in room.players:
+                                await connection_manager.send(room_id, user_id, {
+                                    "type": GameWebSocketMessageType.GAME_STATE,
+                                    "state": jsonable_encoder(game_manager.get_state(player.user_id)),
+                                })
                         else:
                             # Game not supported
                             await connection_manager.broadcast(room_id, {
@@ -319,7 +320,7 @@ async def websocket_room_endpoint(
             elif message_type == "get_game_state":
                 # Check if game is active
                 if room_id in active_games:
-                    game_state = active_games[room_id].get_state()
+                    game_state = active_games[room_id].get_state(user_id)
                     await websocket.send_json({
                         "type": GameWebSocketMessageType.GAME_STATE,
                         "state": jsonable_encoder(game_state),

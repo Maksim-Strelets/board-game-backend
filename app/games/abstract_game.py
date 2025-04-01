@@ -47,8 +47,13 @@ class AbstractGameManager(ABC):
         pass
 
     @abstractmethod
-    def get_state(self) -> Dict[str, Any]:
-        """Get current game state for sending to clients."""
+    def get_state(self, user_id) -> Dict[str, Any]:
+        """Get current game state for sending to user."""
+        pass
+
+    @abstractmethod
+    def get_game_stats(self) -> Dict[str, Any]:
+        """Get game stats for sending to clients."""
         pass
 
     def next_player(self):

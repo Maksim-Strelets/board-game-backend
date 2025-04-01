@@ -9,7 +9,12 @@ def get_game_room(db: Session, room_id: int):
 
 
 def get_game_rooms_by_game(db: Session, game_id: int, skip: int = 0, limit: int = 100):
-    return db.query(GameRoom).filter(GameRoom.game_id == game_id).offset(skip).limit(limit).all()
+    return (db.query(GameRoom)
+            .filter(GameRoom.game_id == game_id)
+            .filter(GameRoom.status != RoomStatus.ENDED.name)
+            .offset(skip)
+            .limit(limit)
+            .all())
 
 
 def create_game_room(db: Session, game_room: GameRoomCreate):

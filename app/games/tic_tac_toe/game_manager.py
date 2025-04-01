@@ -3,6 +3,7 @@ from typing import Dict, Any, Tuple, List, Optional
 from datetime import datetime
 import time
 from app.games.abstract_game import AbstractGameManager
+from app.serializers.game import serialize_players
 
 
 class TicTacToeManager(AbstractGameManager):
@@ -22,38 +23,36 @@ class TicTacToeManager(AbstractGameManager):
         self.moves_count = {player.user_id: 0 for player in room.players}
         self.player_usernames = {}  # Will be populated later
 
-    def initialize_game(self) -> Dict[str, Any]:
+    def initialize_game(self) -> None:
         """Initialize Tic Tac Toe board and game state."""
         self.board = [None] * 9  # 3x3 board flattened to 1D array
         self.is_game_over = False
         self.winner = None
         self.current_player_index = 0  # First player starts
 
-        return self.get_state()
-
     def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], Dict[str, Any]]:
         """Process a player's move."""
         # Verify it's the player's turn
         if str(player_id) != str(self.current_player_id):
-            return False, "Not your turn", self.get_state()
+            return False, "Not your turn", self.get_state(player_id)
 
         # Game already over
         if self.is_game_over:
-            return False, "Game is already over", self.get_state()
+            return False, "Game is already over", self.get_state(player_id)
 
         # Validate move data
         if 'position' not in move_data:
-            return False, "Invalid move data, position required", self.get_state()
+            return False, "Invalid move data, position required", self.get_state(player_id)
 
         position = move_data['position']
 
         # Validate position
         if not isinstance(position, int) or position < 0 or position >= 9:
-            return False, "Invalid position", self.get_state()
+            return False, "Invalid position", self.get_state(player_id)
 
         # Check if position is already taken
         if self.board[position] is not None:
-            return False, "Position already taken", self.get_state()
+            return False, "Position already taken", self.get_state(player_id)
 
         # Make the move
         self.board[position] = self.symbols[player_id]
@@ -68,7 +67,7 @@ class TicTacToeManager(AbstractGameManager):
         if not self.is_game_over:
             self.next_player()
 
-        return True, None, self.get_state()
+        return True, None, self.get_state(player_id)
 
     def check_game_over(self) -> Tuple[bool, Optional[int]]:
         """Check if the game is over (win or draw)."""
@@ -96,7 +95,7 @@ class TicTacToeManager(AbstractGameManager):
         # Game not over
         return False, None
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to clients."""
         return {
             "game": "tic_tac_toe",
@@ -104,7 +103,7 @@ class TicTacToeManager(AbstractGameManager):
             "current_player": str(self.current_player_id),
             "is_game_over": self.is_game_over,
             "winner": self.winner if self.winner is not None else "draw" if self.is_game_over else None,
-            "players": self.players,
+            "players": serialize_players(self.players),
             "symbols": self.symbols,
         }
 
@@ -112,7 +111,7 @@ class TicTacToeManager(AbstractGameManager):
     def get_game_stats(self) -> Dict[str, Any]:
         """Get statistics about the completed game"""
         # Calculate game duration in minutes
-        duration_mins = round((time.time() - self.start_time) / 60, 1)
+        duration_secs = round(time.time() - self.start_time)
 
         # Prepare player stats
         players_stats = []
@@ -121,7 +120,7 @@ class TicTacToeManager(AbstractGameManager):
 
             players_stats.append({
                 "user_id": player.user_id,
-                "username": player.username,
+                "username": player.user.username,
                 "symbol": self.symbols[player.user_id],
                 "moves": self.moves_count[player.user_id],
                 "is_winner": is_winner,
@@ -132,15 +131,14 @@ class TicTacToeManager(AbstractGameManager):
         winner = None
         if self.winner is not None:
             winner = {
-                "user_id": self.winner,
-                "username": self.players.get(self.winner, f"Player {self.winner}"),
-                "symbol": self.symbols[self.winner]
+                "user_data": self.players.get(self.winner, f"Player {self.winner}").user,
+                "symbol": self.symbols[self.winner],
             }
 
         return {
             "game_id": "tic_tac_toe",
             "room_id": self.room_id,
-            "duration": duration_mins,
+            "duration": duration_secs,
             "total_moves": sum(self.moves_count.values()),
             "winner": winner,
             "is_draw": self.is_game_over and self.winner is None,
