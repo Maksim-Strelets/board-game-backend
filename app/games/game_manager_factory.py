@@ -16,21 +16,19 @@ class GameManagerFactory:
         cls._game_managers[game_id] = manager_class
 
     @classmethod
-    def create_game_manager(cls, game_id: int, room_id: int, players: List[int]) -> Optional[AbstractGameManager]:
+    def create_game_manager(cls, room) -> Optional[AbstractGameManager]:
         """
         Create a game manager instance for the specified game ID.
 
         Args:
-            game_id: ID of the game
-            room_id: ID of the room
-            players: List of player IDs
+            room: db game room
 
         Returns:
             Game manager instance or None if game not supported
         """
         # Check if we have already registered this game
-        if game_id in cls._game_managers:
-            return cls._game_managers[game_id](room_id, players)
+        if room.game_id in cls._game_managers:
+            return cls._game_managers[room.game_id](room)
 
         # Try to dynamically load the game module
         try:
@@ -45,10 +43,10 @@ class GameManagerFactory:
                 # Add more games as needed
             }
 
-            if game_id not in game_names:
+            if room.game_id not in game_names:
                 return None
 
-            game_name = game_names[game_id]
+            game_name = game_names[room.game_id]
             module_path = f"app.games.{game_name}.game_manager"
 
             # Import the module
@@ -62,13 +60,13 @@ class GameManagerFactory:
                         issubclass(attr, AbstractGameManager) and
                         attr != AbstractGameManager):
                     # Register the game manager for future use
-                    cls.register_game(game_id, attr)
+                    cls.register_game(room.game_id, attr)
 
                     # Create and return an instance
-                    return attr(room_id, players)
+                    return attr(room)
 
             return None
 
         except (ImportError, AttributeError) as e:
-            print(f"Failed to load game manager for game ID {game_id}: {e}")
+            print(f"Failed to load game manager for game ID {room.game_id}: {e}")
             return None

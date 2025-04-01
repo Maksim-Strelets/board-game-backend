@@ -15,6 +15,7 @@ class RoomStatus(enum.Enum):
 class PlayerStatus(enum.Enum):
     READY = "ready"
     NOT_READY = "not_ready"
+    IN_GAME = "in_game"
 
 
 Base = declarative_base()

@@ -2,13 +2,16 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, List, Optional
 
+from app.schemas.game_room import GameRoomPlayerResponse
+from app.schemas.user import UserResponse
+
 
 class AbstractGameManager(ABC):
     """Abstract base class for all game managers."""
 
-    def __init__(self, room_id: int, players: List[int]):
-        self.room_id = room_id
-        self.player_ids = players
+    def __init__(self, room):
+        self.room_id = room.id
+        self.players = {player.user_id: player for player in room.players}
         self.game_state = {}
         self.current_player_index = 0
         self.is_game_over = False
@@ -50,9 +53,9 @@ class AbstractGameManager(ABC):
 
     def next_player(self):
         """Advance to the next player."""
-        self.current_player_index = (self.current_player_index + 1) % len(self.player_ids)
+        self.current_player_index = (self.current_player_index + 1) % len(self.players)
 
     @property
     def current_player_id(self) -> int:
         """Get current player ID."""
-        return self.player_ids[self.current_player_index]
+        return list(self.players.keys())[self.current_player_index]

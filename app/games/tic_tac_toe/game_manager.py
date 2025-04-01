@@ -1,19 +1,26 @@
 # app/games/tic_tac_toe/game_manager.py
 from typing import Dict, Any, Tuple, List, Optional
+from datetime import datetime
+import time
 from app.games.abstract_game import AbstractGameManager
 
 
 class TicTacToeManager(AbstractGameManager):
     """Implementation of Tic Tac Toe game logic."""
 
-    def __init__(self, room_id: int, players: List[int]):
-        super().__init__(room_id, players)
+    def __init__(self, room):
+        super().__init__(room)
         # Ensure we have exactly 2 players
-        if len(players) != 2:
+        if len(room.players) != 2:
             raise ValueError("Tic Tac Toe requires exactly 2 players")
 
         # Symbols for players (X always goes first)
-        self.symbols = {str(players[0]): "X", str(players[1]): "O"}
+        self.symbols = {room.players[0].user_id: "X", room.players[1].user_id: "O"}
+
+        # Add stats tracking
+        self.start_time = time.time()
+        self.moves_count = {player.user_id: 0 for player in room.players}
+        self.player_usernames = {}  # Will be populated later
 
     def initialize_game(self) -> Dict[str, Any]:
         """Initialize Tic Tac Toe board and game state."""
@@ -49,7 +56,10 @@ class TicTacToeManager(AbstractGameManager):
             return False, "Position already taken", self.get_state()
 
         # Make the move
-        self.board[position] = self.symbols[str(player_id)]
+        self.board[position] = self.symbols[player_id]
+
+        # Track move count
+        self.moves_count[player_id] += 1
 
         # Check for game over
         self.is_game_over, self.winner = self.check_game_over()
@@ -77,7 +87,7 @@ class TicTacToeManager(AbstractGameManager):
                 winning_symbol = self.board[pattern[0]]
                 for player_id, symbol in self.symbols.items():
                     if symbol == winning_symbol:
-                        return True, int(player_id)
+                        return True, player_id
 
         # Check for draw (all positions filled)
         if None not in self.board:
@@ -93,6 +103,46 @@ class TicTacToeManager(AbstractGameManager):
             "board": self.board,
             "current_player": str(self.current_player_id),
             "is_game_over": self.is_game_over,
-            "winner": str(self.winner) if self.winner is not None else "draw" if self.is_game_over else None,
-            "players": self.symbols
+            "winner": self.winner if self.winner is not None else "draw" if self.is_game_over else None,
+            "players": self.players,
+            "symbols": self.symbols,
+        }
+
+    # Add method to get game stats
+    def get_game_stats(self) -> Dict[str, Any]:
+        """Get statistics about the completed game"""
+        # Calculate game duration in minutes
+        duration_mins = round((time.time() - self.start_time) / 60, 1)
+
+        # Prepare player stats
+        players_stats = []
+        for player in self.players.values():
+            is_winner = self.winner == player.user_id if self.winner is not None else False
+
+            players_stats.append({
+                "user_id": player.user_id,
+                "username": player.username,
+                "symbol": self.symbols[player.user_id],
+                "moves": self.moves_count[player.user_id],
+                "is_winner": is_winner,
+                "score": 1 if is_winner else 0  # Simple scoring: 1 for win, 0 otherwise
+            })
+
+        # Get winner info if there is one
+        winner = None
+        if self.winner is not None:
+            winner = {
+                "user_id": self.winner,
+                "username": self.players.get(self.winner, f"Player {self.winner}"),
+                "symbol": self.symbols[self.winner]
+            }
+
+        return {
+            "game_id": "tic_tac_toe",
+            "room_id": self.room_id,
+            "duration": duration_mins,
+            "total_moves": sum(self.moves_count.values()),
+            "winner": winner,
+            "is_draw": self.is_game_over and self.winner is None,
+            "players": players_stats
         }
