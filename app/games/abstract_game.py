@@ -3,13 +3,14 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, List, Optional
 
 from app.schemas.game_room import GameRoomPlayerResponse
-from app.schemas.user import UserResponse
+from app.websockets.manager import ConnectionManager
 
 
 class AbstractGameManager(ABC):
     """Abstract base class for all game managers."""
 
-    def __init__(self, room):
+    def __init__(self, room, connection_manager: ConnectionManager):
+        self.connection_manager = connection_manager
         self.room_id = room.id
         self.players = {player.user_id: player for player in room.players}
         self.game_state = {}
@@ -23,7 +24,7 @@ class AbstractGameManager(ABC):
         pass
 
     @abstractmethod
-    def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+    async def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """
         Process a move from a player.
 

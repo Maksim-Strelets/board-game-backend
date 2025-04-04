@@ -1,0 +1,1049 @@
+# app/games/borsht/game_manager.py
+from typing import Dict, Any, Tuple, List, Optional
+import random
+import time
+
+from fastapi.encoders import jsonable_encoder
+
+from app.games.abstract_game import AbstractGameManager
+from app.serializers.game import serialize_players
+
+from app.games.borsht import game_cards
+
+
+class BorshtManager(AbstractGameManager):
+    """Implementation of Borsht card game logic."""
+
+    def __init__(self, room, connection_manager):
+        super().__init__(room, connection_manager)
+        # Ensure we have 2-5 players (based on game rules)
+        if len(room.players) < 2 or len(room.players) > 5:
+            raise ValueError("Borsht requires 2-5 players")
+
+        # Track game start time for statistics
+        self.start_time = time.time()
+
+        # Player state tracking
+        self.player_recipes = {}  # Will store the recipe card for each player
+        self.player_borsht = {}  # Will store ingredients in each player's borsht
+        self.player_hands = {}  # Will store cards in each player's hand
+        self.moves_count = {player.user_id: 0 for player in room.players}
+
+        # Game state
+        self.market = []  # Cards available in the market
+        self.deck = []  # Main ingredient deck
+        self.discard_pile = []  # Discard pile
+
+        # Special states tracking
+        self.market_limit = 8  # Default market size
+        self.recipes_revealed = False  # If recipes are revealed due to "Talkative Cook" shkvarka
+        self.game_ending = False  # Flag to indicate we're in the final round
+        self.first_finisher = None  # Player who completed their recipe first
+
+        # "shkvarka" cards (Shkvarky) active effects
+        self.active_shkvarkas = []  # List of active permanent shkvarka effects
+
+    def initialize_game(self) -> None:
+        """Initialize the Borsht game state."""
+        # Initialize each player's state
+        for player_id in self.players:
+            self.player_borsht[player_id] = []  # Empty borsht
+            self.player_hands[player_id] = []  # Empty hand
+            self.player_recipes[player_id] = None  # No recipe yet
+
+        # Set up the initial game state
+        self.is_game_over = False
+        self.winner = None
+        self.current_player_index = 0  # First player starts
+
+        # Generate deck, deal cards and set up market
+        self._generate_deck()
+        self._deal_initial_cards()
+        self._setup_market()
+
+    def _generate_deck(self):
+        """Generate the ingredient deck based on game rules."""
+        # This would typically come from a database, but for this example,
+        # we'll define it directly in code based on the game rulebook
+        self.deck = game_cards.base_cards.copy()  # TODO: check copying
+
+        self.recipes = game_cards.recipes.copy()
+
+        # Shuffle the deck (we would use a proper shuffle in production)
+        random.shuffle(self.deck)
+        random.shuffle(self.recipes)
+
+    def _deal_initial_cards(self):
+        """Deal initial cards to players."""
+        # Deal 5 cards to each player
+        for player_id in self.players:
+            self.player_hands[player_id] = self.deck[:5]
+            self.deck = self.deck[5:]
+
+            # Assign a random recipe to each player
+            import random
+            self.player_recipes[player_id] = random.choice(self.recipes)  # TODO: provide select of 3
+
+    def _setup_market(self):
+        """Set up the initial market with 8 cards."""
+        # Draw the top 8 cards from the deck for the market
+        self.market = self.deck[:self.market_limit]
+        self.deck = self.deck[self.market_limit:]
+
+    async def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
+        """Process a player's move."""
+        # Verify it's the player's turn
+        if str(player_id) != str(self.current_player_id):
+            return False, "Not your turn", self.is_game_over
+
+        # Game already over
+        if self.is_game_over:
+            return False, "Game is already over", self.is_game_over
+
+        # Can't target the player who completed their recipe first
+        if self.first_finisher is not None and move_data.get('target_player') == self.first_finisher:
+            return False, "Cannot target a player who has completed their recipe", self.is_game_over
+
+        # Validate move data
+        if 'action' not in move_data:
+            return False, "Invalid move data, action required", self.is_game_over
+
+        action = move_data['action']
+        success = False
+        error_message = None
+
+        # Track move count
+        self.moves_count[player_id] += 1
+
+        # Process different action types
+        if action == 'add_ingredient':
+            # Add an ingredient to the player's borsht
+            success, error_message = await self._handle_add_ingredient(player_id, move_data)
+
+        elif action == 'draw_cards':
+            # Draw 2 cards from the deck
+            success, error_message = await self._handle_draw_cards(player_id)
+
+        elif action == 'play_special':
+            # Play a special ingredient card for its effect
+            success, error_message = await self._handle_special_ingredient(player_id, move_data)
+
+        elif action == 'exchange_ingredients':
+            # Exchange ingredients with the market
+            success, error_message = await self._handle_exchange(player_id, move_data)
+
+        else:
+            error_message = "Invalid action type"
+
+        # Check if player has completed their recipe
+        recipe_completed = self._check_recipe_completion(player_id)
+
+        # If player completed recipe and it's the first to do so
+        if recipe_completed and self.first_finisher is None:
+            self.first_finisher = player_id
+            self.game_ending = True
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'recipe_completed',
+                'player_id': player_id,
+                'is_first': True
+            })
+
+        # Check if game is over (all players have had their final turn)
+        if self.game_ending:
+            # If we've gone around to the player who completed their recipe first
+            if str(player_id) == str(self.first_finisher) and self.current_player_index == self.players.index(
+                    player_id):
+                self.is_game_over = True
+                self._determine_winner()
+
+        # If move was successful and game not over, advance to next player
+        if success and not self.is_game_over:
+            self.next_player()
+
+        for player_id in self.players.keys():
+            await self.connection_manager.send(self.room_id, player_id, {
+                "type": "game_update",
+                "state": jsonable_encoder(self.get_state(player_id))
+            })
+
+        return success, error_message, self.is_game_over
+
+    async def _handle_add_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Handle adding an ingredient to the player's borsht."""
+        if 'card_id' not in move_data:
+            return False, "Card ID required to add ingredient"
+
+        card_id = move_data['card_id']
+
+        # Find the card in player's hand
+        card_index = None
+        for i, card in enumerate(self.player_hands[player_id]):
+            if card['id'] == card_id:
+                card_index = i
+                break
+
+        if card_index is None:
+            return False, "Card not in hand"
+
+        card = self.player_hands[player_id][card_index]
+
+        # Check if it's a special card - these can't be added to borsht
+        if card['type'] == 'special':
+            return False, "Special ingredients cannot be added to borsht"
+
+        # Check if card in player's recipe
+        if card['type'] in ['regular', 'rare'] and card['id'] not in self.player_recipes[player_id]["ingredients"]:
+            return False, "Card not in your recipe"
+
+        # Check if player already has this ingredient type
+        for borsht_card in self.player_borsht[player_id]:
+            if borsht_card['id'] == card_id:
+                return False, "You already have this ingredient in your borsht"
+
+        # Add the card to the player's borsht
+        self.player_borsht[player_id].append(card)
+        # Remove from hand
+        self.player_hands[player_id].pop(card_index)
+
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'ingredient_added',
+            'player_id': player_id,
+            'card': card,
+        })
+
+        return True, None
+
+    async def _handle_draw_cards(self, player_id: int) -> Tuple[bool, Optional[str]]:
+        """Handle drawing 2 cards from the deck."""
+        # Check if there are enough cards in the deck
+        if len(self.deck) < 2:
+            # If not enough cards, shuffle the discard pile
+            if len(self.discard_pile) > 0:
+                import random
+                self.deck.extend(self.discard_pile)
+                random.shuffle(self.deck)
+                self.discard_pile = []
+
+            # If still not enough cards, draw what's available
+            if len(self.deck) == 0:
+                return False, "No cards available to draw"
+
+        # Draw up to 2 cards
+        cards_to_draw = min(2, len(self.deck))
+        drawn_cards = self.deck[:cards_to_draw]
+        self.deck = self.deck[cards_to_draw:]
+
+        # Check for shkvarka cards and process them
+        for i, card in enumerate(drawn_cards):
+            if card.get('type') == 'shkvarka':
+                # Process shkvarka card
+                self._handle_shkvarka(player_id, card)
+                # Replace shkvarka card with a new card from deck
+                if len(self.deck) > 0:
+                    drawn_cards[i] = self.deck.pop(0)
+                else:
+                    # If no more cards, just remove the shkvarka
+                    drawn_cards.pop(i)
+
+        # Add cards to player's hand
+        self.player_hands[player_id].extend(drawn_cards)
+
+        # Check hand limit (8 cards)
+        if len(self.player_hands[player_id]) > 8:
+            # Player must discard down to 8 cards
+            # For simplicity, we'll just discard the excess here
+            # In a real implementation, we'd ask the player which cards to discard
+            excess = len(self.player_hands[player_id]) - 8
+            discard = self.player_hands[player_id][-excess:]
+            self.player_hands[player_id] = self.player_hands[player_id][:-excess]
+            self.discard_pile.extend(discard)
+
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'cards_drawn',
+            'player_id': player_id,
+            'count': min(2, len(self.deck))
+        })
+
+        return True, None
+
+    def _handle_shkvarka(self, player_id, card):
+        pass
+
+    async def _handle_special_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Handle playing a special ingredient for its effect."""
+        if 'card_id' not in move_data:
+            return False, "Card ID required to play special ingredient"
+
+        card_id = move_data['card_id']
+
+        # Find the card in player's hand
+        card_index = None
+        for i, card in enumerate(self.player_hands[player_id]):
+            if card['id'] == card_id:
+                card_index = i
+                break
+
+        if card_index is None:
+            return False, "Card not in hand"
+
+        card = self.player_hands[player_id][card_index]
+
+        # Check if it's a special card
+        if card['type'] != 'special':
+            return False, "Card is not a special ingredient"
+
+        # Process the special card effect
+        effect = card['effect']
+        success = False
+        error_message = None
+
+        # Handle different special card effects
+        if effect == 'steal_or_discard':  # Chili Pepper
+            if 'target_player' not in move_data or 'target_card' not in move_data or 'action_type' not in move_data:
+                return False, "Target player, target card, and action type required for this effect"
+
+            target_player = move_data['target_player']
+            target_card = move_data['target_card']
+            action_type = move_data['action_type']  # 'steal' or 'discard'
+
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'special_effect',
+                'effect': 'steal_or_discard',
+                'player_id': player_id,
+                'target_player': target_player,
+                'target_card': target_card,
+                'action_type': action_type
+            })
+
+            # Check if target player has a sour cream defense
+            defense_used = await self._check_sour_cream_defense(target_player, card)
+            if defense_used:
+                # Remove the card from player's hand and add to discard pile
+                self.player_hands[player_id].pop(card_index)
+                self.discard_pile.append(card)
+                return True, "Target defended with Sour Cream"
+
+            # Find the target card in target player's borsht
+            target_card_obj = None
+            for i, c in enumerate(self.player_borsht[target_player]):
+                if c['id'] == target_card:
+                    target_card_obj = c
+                    target_card_index = i
+                    break
+
+            if target_card_obj is None:
+                return False, "Target card not found in target player's borsht"
+
+            if action_type == 'steal': # TODO: check card already in borscht
+                # Move card from target player's borsht to current player's borsht
+                self.player_borsht[target_player].pop(target_card_index)
+                self.player_borsht[player_id].append(target_card_obj)
+            else:  # 'discard'
+                # Remove card from target player's borsht
+                self.player_borsht[target_player].pop(target_card_index)
+                self.discard_pile.append(target_card_obj)
+
+            success = True
+
+        elif effect == 'discard_or_take':  # Black Pepper
+            if 'effect_choice' not in move_data:
+                return False, "Effect choice required for Black Pepper"
+
+            effect_choice = move_data['effect_choice']  # 'discard_from_borsht' or 'take_from_hand'
+
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'special_effect',
+                'effect': 'discard_or_take',
+                'player_id': player_id,
+                'effect_choice': effect_choice,
+                'affected_players': [p for p in self.players if p != player_id]
+            })
+
+            # Apply effect to all other players
+            for target_player in self.players:
+                if target_player == player_id:
+                    continue  # Skip current player
+
+                # Check if target player has a sour cream defense
+                defense_used = await self._check_sour_cream_defense(target_player, card)
+                if defense_used:
+                    continue  # Skip this player if they defended
+
+                if effect_choice == 'discard_from_borsht': # TODO: card selection
+                    # Discard 1 ingredient from target player's borsht
+                    if len(self.player_borsht[target_player]) > 0:
+                        # For simplicity, we'll discard the first ingredient
+                        # In a real implementation, we'd let the player choose
+                        discard_card = self.player_borsht[target_player].pop(0)
+                        self.discard_pile.append(discard_card)
+
+                elif effect_choice == 'take_from_hand':
+                    # Take 1 card from target player's hand
+                    if len(self.player_hands[target_player]) > 0:
+                        # For simplicity, we'll take the first card
+                        # In a real implementation, we'd take a random card
+                        taken_card = self.player_hands[target_player].pop(0)
+                        self.player_hands[player_id].append(taken_card)
+
+            success = True
+
+        elif effect == 'defense':  # Sour Cream
+            # This is handled passively when targeted by Chili or Black Pepper
+            return False, "Sour Cream is used defensively when targeted by another player"
+
+        elif effect == 'take_market':  # Ginger
+            # Take 2 cards from market
+            if len(self.market) < 2:
+                return False, "Not enough cards in market"
+
+            if 'market_cards' not in move_data or len(move_data['market_cards']) != 2:
+                return False, "Must select 2 market cards"
+
+            selected_cards = move_data['market_cards']
+            for card_id in selected_cards:
+                for i, card in enumerate(self.market):
+                    if card['id'] == card_id:
+                        # Remove from market and add to player's hand
+                        self.player_hands[player_id].append(card)
+                        self.market.pop(i)
+                        break
+
+            # Replenish market
+            cards_needed = self.market_limit - len(self.market)
+            if cards_needed > 0 and len(self.deck) > 0:
+                new_cards = self.deck[:cards_needed]
+                self.market.extend(new_cards)
+                self.deck = self.deck[cards_needed:]
+
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'special_effect',
+                'effect': 'take_market',
+                'player_id': player_id,
+                'cards_taken': selected_cards
+            })
+
+            success = True
+
+        elif effect == 'take_discard':  # Cinnamon
+            # Take a card from discard pile
+            if len(self.discard_pile) == 0:
+                # No cards in discard, return card to hand
+                return True, "No cards in discard pile"
+
+            if 'discard_card' not in move_data:
+                return False, "Must select a card from discard pile"
+
+            selected_card_id = move_data['discard_card']
+            for i, card in enumerate(self.discard_pile):
+                if card['id'] == selected_card_id:
+                    # Remove from discard and add to player's hand
+                    self.player_hands[player_id].append(card)
+                    self.discard_pile.pop(i)
+                    success = True
+                    break
+
+            if not success:
+                return False, "Selected card not found in discard pile"
+
+        elif effect == 'look_top_5':  # Olive Oil
+            # Look at top 5 cards and take 2
+            if len(self.deck) < 5:
+                # If not enough cards, shuffle the discard pile
+                if len(self.discard_pile) > 0:
+                    import random
+                    self.deck.extend(self.discard_pile)
+                    random.shuffle(self.deck)
+                    self.discard_pile = []
+
+            if len(self.deck) < 2:
+                return False, "Not enough cards in deck"
+
+            # Look at top 5 cards (or as many as available)
+            look_count = min(5, len(self.deck))
+            top_cards = self.deck[:look_count]
+
+            if 'selected_cards' not in move_data or len(move_data['selected_cards']) != 2:
+                return False, "Must select 2 cards from the top 5"
+
+            # Player selected 2 cards to keep
+            selected_indices = []
+            for card_id in move_data['selected_cards']:
+                for i, card in enumerate(top_cards):
+                    if card['id'] == card_id and i not in selected_indices:
+                        selected_indices.append(i)
+                        self.player_hands[player_id].append(card)
+                        break
+
+            if len(selected_indices) != 2:
+                return False, "Invalid card selection"
+
+            # Remove selected cards and put the rest back on top of deck
+            new_deck = []
+            for i, card in enumerate(top_cards):
+                if i not in selected_indices:
+                    new_deck.append(card)
+
+            self.deck = new_deck + self.deck[look_count:]
+            success = True
+
+        elif effect == 'refresh_market':  # Paprika
+            await self._handle_market_refresh()
+
+            # Check for 3 identical cards  TODO: add check after each market update
+            duplicate_check = {}
+            has_duplicates = False
+
+            for card in self.market:
+                card_id = card['id']
+                if card_id in duplicate_check:
+                    duplicate_check[card_id] += 1
+                    if duplicate_check[card_id] >= 3:
+                        has_duplicates = True
+                        break
+                else:
+                    duplicate_check[card_id] = 1
+
+            if has_duplicates:
+                # Refresh market again
+                self.discard_pile.extend(self.market)
+                self.market = []
+
+                market_size = min(self.market_limit, len(self.deck))
+                self.market = self.deck[:market_size]
+                self.deck = self.deck[market_size:]
+
+            success = True
+
+        # Remove the card from player's hand and add to discard pile
+        self.player_hands[player_id].pop(card_index)
+        self.discard_pile.append(card)
+
+        if success:
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'special_played',
+                'player_id': player_id,
+                'special_card': card_id,
+                'effect': effect,
+            })
+
+        return success, error_message
+
+    async def _check_sour_cream_defense(self, target_player: int, card=None) -> bool:
+        """
+        Check if target player has and wants to use a Sour Cream defense card.
+        This method will communicate with the target player via websocket and wait for their response.
+
+        Args:
+            target_player (int): ID of the player being targeted
+            card (dict, optional): The card being played against them
+
+        Returns:
+            bool: True if player used Sour Cream defense, False otherwise
+        """
+        # Check if player has Sour Cream in their hand
+        has_sour_cream = False
+        sour_cream_index = None
+
+        for i, player_card in enumerate(self.player_hands[target_player]):
+            if (
+                    player_card['id'] == 'sour_cream'
+                    and player_card['type'] == 'special'
+                    and player_card['effect'] == 'defense'
+            ):
+                has_sour_cream = True
+                sour_cream_index = i
+                break
+
+        if not has_sour_cream:
+            return False  # Player doesn't have a defense card
+
+        # Send websocket request to player asking if they want to use defense
+        # We'll use the room's websocket connections
+        try:
+            # Create a request message with details about the attack
+            defense_request = {
+                'type': 'defense_request',
+                'attacker': self.current_player_id,
+                'card': card,
+                'timeout': 30,  # Give player 30 seconds to decide
+                'request_id': f"defense_{time.time()}"
+            }
+
+            # Send message to player through the room's websocket
+            await self.connection_manager.send(self.room_id, target_player, defense_request)
+
+            # Set up a timer to wait for response (timeout after 30 seconds)
+            response_received = False
+            start_time = time.time()
+            defense_used = False
+
+            # Wait for response with timeout
+            while time.time() - start_time < 30 and not response_received:
+                # This would normally be handled by an async framework # TODO: async
+                # For this example, we'll simulate the waiting pattern
+                time.sleep(0.5)  # Small sleep to prevent CPU spinning
+
+                # Check if we've received a response (this would be set by the websocket handler)
+                # In a real implementation, this would use proper async/await patterns
+                if hasattr(self, f"defense_response_{defense_request['request_id']}"):
+                    response = getattr(self, f"defense_response_{defense_request['request_id']}")
+                    response_received = True
+                    defense_used = response.get('use_defense', False)
+                    delattr(self, f"defense_response_{defense_request['request_id']}")
+
+            # If player chose to use defense or timed out (default to not using)
+            if defense_used:
+                # Remove Sour Cream from player's hand and put it in discard pile
+                defense_card = self.player_hands[target_player].pop(sour_cream_index)
+                self.discard_pile.append(defense_card)
+
+                # Notify all players about the defense
+                await  self.connection_manager.broadcast(self.room_id, {
+                    'type': 'card_defended',
+                    'defender': target_player,
+                    'attacker': self.current_player_id,
+                    'defense_card': 'sour_cream'
+                })
+
+                return True
+
+            return False
+
+        except Exception as e:
+            # Log the error
+            print(f"Error in defense request: {e}")
+            return False  # Default to no defense on errors
+
+    async def _handle_market_refresh(self) -> None:
+        """
+        Discard all current market cards and replace them with new cards from the deck.
+        """
+        # Move all current market cards to discard pile
+        self.discard_pile.extend(self.market)
+        self.market = []
+
+        # Check if we need to reshuffle the deck
+        if len(self.deck) < self.market_limit and len(self.discard_pile) > 0:
+            self._reshuffle_discard()
+
+        # Get new cards from deck
+        self.market = self.deck[:self.market_limit]
+        self.deck = self.deck[self.market_limit:]
+
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'market_refreshed',
+            # 'duplicates_found': has_duplicates
+        })
+
+    def _reshuffle_discard(self) -> None:
+        """
+        Reshuffle discard pile into the ingredient deck.
+        Skip shkvarka cards if present.
+        """
+        # Filter out shkvarka cards if applicable
+        regular_cards = [card for card in self.discard_pile
+                         if 'type' in card and card['type'] != 'shkvarka']
+
+        # Shuffle the regular cards and add to deck
+        random.shuffle(regular_cards)
+        self.deck.extend(regular_cards)
+
+        # Clear discard pile (keeping only shkvarkas)
+        self.discard_pile = [card for card in self.discard_pile
+                             if 'type' in card and card['type'] == 'shkvarka']
+
+    async def _handle_exchange(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """Handle exchanging ingredients with the market."""
+        if 'hand_cards' not in move_data or 'market_cards' not in move_data:
+            return False, "Hand cards and market cards required for exchange"
+
+        hand_cards = move_data['hand_cards']  # List of card IDs from hand
+        market_cards = move_data['market_cards']  # List of card IDs from market
+
+        # Verify exchange direction (1 to many or many to 1)
+        if len(hand_cards) != 1 and len(market_cards) != 1:
+            return False, "Exchange must be 1-to-many or many-to-1"
+
+        # Calculate total cost of cards being exchanged
+        hand_total_cost = 0
+        hand_card_objects = []
+
+        for card_id in hand_cards:
+            card_found = False
+            for i, card in enumerate(self.player_hands[player_id]):
+                if card['id'] == card_id:
+                    hand_total_cost += card['cost']
+                    hand_card_objects.append((i, card))
+                    card_found = True
+                    break
+            if not card_found:
+                return False, f"Card {card_id} not in hand"
+
+        market_total_cost = 0
+        market_card_objects = []
+
+        for card_id in market_cards:
+            card_found = False
+            for i, card in enumerate(self.market):
+                if card['id'] == card_id:
+                    market_total_cost += card['cost']
+                    market_card_objects.append((i, card))
+                    card_found = True
+                    break
+            if not card_found:
+                return False, f"Card {card_id} not in market"
+
+        # Validate exchange value
+        if len(hand_cards) == 1:
+            # 1-to-many: hand card must be >= market cards total
+            if hand_total_cost < market_total_cost:
+                return False, f"Hand card value ({hand_total_cost}) must be >= market cards total ({market_total_cost})"
+        else:
+            # many-to-1: hand cards total must be >= market card
+            if hand_total_cost < market_total_cost:
+                return False, f"Hand cards total ({hand_total_cost}) must be >= market card value ({market_total_cost})"
+
+        # Exchange is valid, perform it
+        # Remove cards from player's hand
+        # Since we're removing items, we need to go in reverse index order to avoid shifting issues
+        for i, _ in sorted(hand_card_objects, key=lambda x: x[0], reverse=True):
+            self.player_hands[player_id].pop(i)
+
+        # Remove cards from market
+        # Same as above, remove in reverse index order
+        for i, _ in sorted(market_card_objects, key=lambda x: x[0], reverse=True):
+            self.market.pop(i)
+
+        # Add market cards to player's hand
+        self.player_hands[player_id].extend([card for _, card in market_card_objects])
+
+        # Add player cards to market
+        self.market.extend([card for _, card in hand_card_objects])
+
+        # Replenish market if needed
+        cards_needed = self.market_limit - len(self.market)
+        if cards_needed > 0 and len(self.deck) > 0:
+            new_cards = self.deck[:cards_needed]
+            self.market.extend(new_cards)
+            self.deck = self.deck[cards_needed:]
+
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'ingredients_exchanged',
+            'player_id': player_id,
+            'hand_cards': hand_cards,
+            'market_cards': market_cards,
+        })
+
+        return True, None
+
+    def _check_recipe_completion(self, player_id) -> bool:
+        """
+        Check if player completed his recipe
+
+        Returns:
+            bool
+        """
+        recipe = self.player_recipes[player_id]
+        recipe_ingredients = recipe['ingredients']
+
+        player_ingredients = self.player_borsht[player_id]
+
+        return all([ing in player_ingredients for ing in recipe_ingredients])
+
+    def check_game_over(self) -> Tuple[bool, Optional[int]]:
+        """
+        Check if any player has completed their borsch. If so, everyone else gets one more turn,
+        then game ends. Calculate final scores.
+
+        Returns:
+            Tuple of (is_game_over, winner_id or None if no winner yet)
+        """
+        # If game is already marked as over, calculate winner
+        if self.is_game_over:
+            winner_id = self._determine_winner()
+            return True, winner_id
+
+        # Check if someone has completed their recipe
+        if self.first_finisher is not None:
+            # Check if we've gone around to the first finisher
+            current_player = self.players[self.current_player_index]
+            if str(current_player) == str(self.first_finisher):
+                # Everyone has had their final turn, game is over
+                self.is_game_over = True
+                winner_id = self._determine_winner()
+                return True, winner_id
+            # Game is ending but not over yet (other players get their final turn)
+            return False, None
+
+        # Check if any player has completed their recipe
+        for player_id in self.players:
+            if self._check_recipe_completion(player_id):
+                # First player to complete recipe
+                self.first_finisher = player_id
+                self.game_ending = True
+                # Other players get one more turn
+                return False, None
+
+        # No one has completed their recipe yet
+        return False, None
+
+    def _determine_winner(self) -> int:
+        """Calculate scores and determine the winner."""
+        scores = {}
+
+        for player_id in self.players:
+            # Base score from ingredients in borsht
+            base_score = sum(card['points'] for card in self.player_borsht[player_id])
+
+            # Calculate recipe completion score
+            recipe = self.player_recipes[player_id]
+            recipe_ingredients = recipe['ingredients']
+
+            # Count how many required ingredients the player has
+            player_ingredients = [card['id'] for card in self.player_borsht[player_id]]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients]
+            completion_count = len(completed_ingredients)
+
+            # Get recipe bonus points based on completion level
+            recipe_bonus = 0
+            for level, points in sorted(recipe['levels'].items()):
+                if completion_count >= level:
+                    recipe_bonus = points
+
+            # Add bonus for being first to complete
+            first_bonus = 2 if player_id == self.first_finisher else 0
+
+            # Calculate final score
+            final_score = base_score + recipe_bonus + first_bonus
+            scores[player_id] = final_score
+
+        # Find player with highest score
+        max_score = -1
+        winner_id = None
+
+        for player_id, score in scores.items():
+            if score > max_score:
+                max_score = score
+                winner_id = player_id
+            elif score == max_score:
+                # Compare sums of card values
+                if sum(c['cost'] for c in self.player_hands[player_id]) > sum(c['cost'] for c in self.player_hands[winner_id]):
+                    winner_id = player_id
+                # In case of tie, the player who completed their recipe first wins
+                elif player_id == self.first_finisher:
+                    winner_id = player_id
+                # If neither player completed recipe, the one with fewer moves wins
+                elif self.first_finisher not in (player_id, winner_id):
+                    if self.moves_count[player_id] < self.moves_count[winner_id]:
+                        winner_id = player_id
+
+        # Save winner info
+        self.winner = winner_id
+        return winner_id
+
+    def calculate_scores(self) -> Dict[int, int]:
+        """
+        Calculate final scores for all players based on:
+        - Points for each ingredient in borsch
+        - Points for completed recipe levels
+
+        Returns:
+            Dictionary mapping player IDs to their final scores
+        """
+        scores = {}
+
+        for player_id in self.players:
+            # Calculate base points from ingredients
+            ingredient_points = sum(card['points'] for card in self.player_borsht[player_id])
+
+            # Get player's recipe
+            recipe = self.player_recipes[player_id]
+            recipe_ingredients = recipe['ingredients']
+
+            # Count how many required ingredients the player has collected
+            player_ingredients = [card['id'] for card in self.player_borsht[player_id]]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients]
+            completion_count = len(completed_ingredients)
+
+            # Calculate recipe bonus based on completion levels
+            recipe_bonus = 0
+            for level, points in sorted(recipe['levels'].items()):
+                if completion_count >= level:
+                    recipe_bonus = points
+                else:
+                    break
+
+            # Add first-completion bonus if applicable
+            first_bonus = 2 if player_id == self.first_finisher else 0
+
+            # Calculate final score
+            final_score = ingredient_points + recipe_bonus + first_bonus
+
+            scores[player_id] = final_score
+
+        return scores
+
+    def get_state(self, player_id: int) -> Dict[str, Any]:
+        """
+        Get current game state for sending to player.
+
+        Returns sanitized game state with:
+        - player's visible information
+        - Market cards
+        - Discard pile (top card)
+        - Current player
+        - Game phase information
+
+        Args:
+            player_id (int): ID of the player requesting the state
+
+        Returns:
+            Dict[str, Any]: Sanitized game state
+        """
+        state = dict(
+            # Basic game state information
+            current_player=self.current_player_id,
+            is_game_over=self.is_game_over,
+            game_ending=self.game_ending,
+            first_finisher=self.first_finisher,
+            market_limit=self.market_limit,
+            recipes_revealed=self.recipes_revealed,
+            cards_in_deck=len(self.deck),
+
+            # Market information
+            market=self.market.copy(),
+
+            # Discard pile - only show top card
+            discard_pile_size=len(self.discard_pile),
+            discard_pile_top=self.discard_pile[-1] if self.discard_pile else None,
+
+            # Player-specific information
+            your_hand=self.player_hands[player_id].copy(),
+            your_borsht=self.player_borsht[player_id].copy(),
+            your_recipe=self.player_recipes[player_id].copy(),
+
+            # Information about other players
+            players=dict(),
+        )
+
+        for pid, player in self.players.items():
+            # Skip the current player as their info is already included
+            if pid == player_id:
+                continue
+
+            # For other players, only show public information
+            state["players"][pid] = {
+                "username": player.user.username,
+                "hand_size": len(self.player_hands[pid]),
+                "borsht": self.player_borsht[pid].copy(),  # Borsht ingredients are public information
+            }
+
+            # Recipe is only visible if recipes are revealed
+            if self.recipes_revealed:
+                state["players"][pid]["recipe"] = self.player_recipes[pid].copy()
+
+        # If game is over, include final scores
+        if self.is_game_over:
+            state["winner"] = self.winner
+            state["scores"] = self.calculate_scores()
+
+            # Once game is over, reveal all player recipes
+            for pid in self.players:
+                if pid not in state["players"]:
+                    state["players"][pid] = {}
+                state["players"][pid]["recipe"] = self.player_recipes[pid].copy()
+
+        # Include active effects
+        state["active_shkvarkas"] = self.active_shkvarkas.copy()
+
+        return state
+
+    def get_game_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the completed game.
+
+        Returns:
+            Dict[str, Any]: Dictionary with game stats including duration, winner,
+                          points per player, ingredient usage, etc.
+        """
+        if not self.is_game_over:
+            return {"error": "Game is not yet complete"}
+
+        # Calculate game duration
+        game_duration = time.time() - self.start_time
+
+        # Get scores and determine winner
+        scores = self.calculate_scores()
+        winner_id = self.winner
+
+        # Calculate additional stats
+        player_stats = {}
+        for player_id in self.players:
+            # Get player's recipe and ingredients
+            recipe = self.player_recipes[player_id]
+            borsht_ingredients = self.player_borsht[player_id]
+
+            # Count ingredient types in player's borsht
+            ingredient_types = {
+                "regular": 0,
+                "rare": 0,
+                "extra": 0,
+                "special": 0
+            }
+
+            for card in borsht_ingredients:
+                if card['type'] in ingredient_types:
+                    ingredient_types[card['type']] += 1
+
+            # Calculate recipe completion percentage
+            recipe_ingredients = recipe['ingredients']
+            player_ingredient_ids = [card['id'] for card in borsht_ingredients]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredient_ids]
+            completion_percentage = (len(completed_ingredients) / len(recipe_ingredients)) * 100
+
+            # Calculate points breakdown
+            ingredient_points = sum(card['points'] for card in borsht_ingredients)
+
+            # Calculate recipe bonus
+            recipe_bonus = 0
+            for level, points in sorted(recipe['levels'].items()):
+                if len(completed_ingredients) >= level:
+                    recipe_bonus = points
+
+            # First finisher bonus
+            first_bonus = 2 if player_id == self.first_finisher else 0
+
+            # Compile player statistics
+            player_stats[player_id] = {
+                "recipe_name": recipe['name'],
+                "recipe_completion": completion_percentage,
+                "completed_ingredients": len(completed_ingredients),
+                "total_recipe_ingredients": len(recipe_ingredients),
+                "ingredient_types": ingredient_types,
+                "total_ingredients": len(borsht_ingredients),
+                "points_breakdown": {
+                    "ingredient_points": ingredient_points,
+                    "recipe_bonus": recipe_bonus,
+                    "first_finisher_bonus": first_bonus,
+                    "total_score": scores[player_id]
+                },
+                "moves_made": self.moves_count[player_id],
+                "final_hand_size": len(self.player_hands[player_id])
+            }
+
+        # Game-wide statistics
+        game_stats = {
+            "duration_seconds": game_duration,
+            "total_rounds": sum(self.moves_count.values()),
+            "winner": winner_id,
+            "winner_score": scores[winner_id],
+            "scores": scores,
+            "player_stats": player_stats,
+            "first_finisher": self.first_finisher,
+            "cards_remaining_in_deck": len(self.deck),
+            "cards_in_discard": len(self.discard_pile),
+            "active_shkvarkas": len(self.active_shkvarkas),
+            "player_count": len(self.players)
+        }
+
+        return game_stats

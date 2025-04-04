@@ -25,6 +25,7 @@ from app.schemas.game_room import (
 from app.schemas.user import UserResponse  # Assuming you have a user schema
 from app.crud.chat_message import create_chat_message
 from app.schemas.chat_message import ChatMessageCreate, ChatMessageResponse
+from app.serializers.user import serialize_user
 
 from app.games.game_manager_factory import GameManagerFactory
 from app.games.abstract_game import AbstractGameManager
@@ -276,46 +277,7 @@ async def websocket_room_endpoint(
 
                     # Initialize game when status changes to in_progress
                     if new_status == RoomStatus.IN_PROGRESS.value:
-                        # Get room data to determine players
-                        room = get_game_room(db, room_id)
-
-                        # Create game manager instance
-                        game_manager = GameManagerFactory.create_game_manager(room)
-
-                        if game_manager:
-                            # Initialize the game
-                            game_manager.initialize_game()
-
-                            for player in room.players:
-                                new_status = PlayerStatus.IN_GAME
-                                updated_player = update_player_status(db, room_id, player.user_id, new_status)
-                                status_change_message = WebSocketMessage(
-                                    type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
-                                    user_id=player.user_id,
-                                    room_id=room_id,
-                                    user=user_public,
-                                    content={
-                                        "player": jsonable_encoder(updated_player),
-                                        "status": new_status
-                                    }
-                                )
-                                await connection_manager.broadcast(room_id, status_change_message.to_dict())
-
-                            # Store the game manager
-                            active_games[room_id] = game_manager
-
-                            # Broadcast initial game state
-                            for player in room.players:
-                                await connection_manager.send(room_id, user_id, {
-                                    "type": GameWebSocketMessageType.GAME_STATE,
-                                    "state": jsonable_encoder(game_manager.get_state(player.user_id)),
-                                })
-                        else:
-                            # Game not supported
-                            await connection_manager.broadcast(room_id, {
-                                "type": GameWebSocketMessageType.GAME_ERROR,
-                                "message": f"Game {room.game_id} not supported"
-                            })
+                        await start_game(db, room_id)
 
             elif message_type == "get_game_state":
                 # Check if game is active
@@ -325,10 +287,12 @@ async def websocket_room_endpoint(
                         "type": GameWebSocketMessageType.GAME_STATE,
                         "state": jsonable_encoder(game_state),
                     })
+                elif room.status.name == RoomStatus.IN_PROGRESS.name:
+                    await start_game(db, room_id)
                 else:
                     await websocket.send_json({
                         "type": GameWebSocketMessageType.GAME_ERROR,
-                        "message": "Game not started yet"
+                        "message": "Game not started"
                     })
 
             elif message_type == GameWebSocketMessageType.GAME_MOVE:
@@ -344,7 +308,7 @@ async def websocket_room_endpoint(
                 move_data = data.get('move', {})
 
                 # Process the move
-                success, error_message, updated_state = active_games[room_id].process_move(user_id, move_data)
+                success, error_message, is_game_over = await active_games[room_id].process_move(user_id, move_data)
 
                 if not success:
                     await websocket.send_json({
@@ -353,14 +317,8 @@ async def websocket_room_endpoint(
                     })
                     continue
 
-                # Broadcast game update to all players
-                await connection_manager.broadcast(room_id, {
-                    "type": GameWebSocketMessageType.GAME_UPDATE,
-                    "state": jsonable_encoder(updated_state)
-                })
-
                 # Check if game is over and send stats
-                if not updated_state.get("is_game_over", False):
+                if not is_game_over:
                     continue
 
                 # Get game stats
@@ -421,3 +379,45 @@ async def websocket_room_endpoint(
                 user=user_public
             )
             await connection_manager.broadcast(room_id, leave_message.to_dict())
+
+async def start_game(db, room_id):
+    # Get room data to determine players
+    room = get_game_room(db, room_id)
+
+    # Create game manager instance
+    game_manager = GameManagerFactory.create_game_manager(room, connection_manager)
+
+    if game_manager:
+        # Initialize the game
+        game_manager.initialize_game()
+
+        for player in room.players:
+            new_status = PlayerStatus.IN_GAME
+            updated_player = update_player_status(db, room_id, player.user_id, new_status)
+            status_change_message = WebSocketMessage(
+                type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
+                user_id=player.user_id,
+                room_id=room_id,
+                user=serialize_user(player.user),
+                content={
+                    "player": jsonable_encoder(updated_player),
+                    "status": new_status
+                }
+            )
+            await connection_manager.broadcast(room_id, status_change_message.to_dict())
+
+        # Store the game manager
+        active_games[room_id] = game_manager
+
+        # Broadcast initial game state
+        for player in room.players:
+            await connection_manager.send(room_id, player.user_id, {
+                "type": GameWebSocketMessageType.GAME_STATE,
+                "state": jsonable_encoder(game_manager.get_state(player.user_id)),
+            })
+    else:
+        # Game not supported
+        await connection_manager.broadcast(room_id, {
+            "type": GameWebSocketMessageType.GAME_ERROR,
+            "message": f"Game {room.game_id} not supported"
+        })
