@@ -16,7 +16,7 @@ class GameManagerFactory:
         cls._game_managers[game_id] = manager_class
 
     @classmethod
-    def create_game_manager(cls, room, connection_manager) -> Optional[AbstractGameManager]:
+    def create_game_manager(cls, db, room, connection_manager) -> Optional[AbstractGameManager]:
         """
         Create a game manager instance for the specified game ID.
 
@@ -29,7 +29,7 @@ class GameManagerFactory:
         """
         # Check if we have already registered this game
         if room.game_id in cls._game_managers:
-            return cls._game_managers[room.game_id](room, connection_manager)
+            return cls._game_managers[room.game_id](db, room, connection_manager)
 
         # Try to dynamically load the game module
         try:
@@ -65,7 +65,7 @@ class GameManagerFactory:
                     cls.register_game(room.game_id, attr)
 
                     # Create and return an instance
-                    return attr(room, connection_manager)
+                    return attr(db, room, connection_manager)
 
             return None
 

@@ -1,12 +1,12 @@
 # app/routers/game_room_ws.py
-import json
+import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-from typing import Dict, Any, Optional
+from typing import Dict
 
 from app.database.base import get_db
-from app.websockets.manager import connection_manager
+from app.websockets.manager import connection_manager, GameWebSocketMessageType, WebSocketMessageType, WebSocketMessage
 from app.crud.game_room import (
     get_game_room,
     add_player_to_room,
@@ -22,7 +22,6 @@ from app.schemas.game_room import (
     GameRoomPlayerResponse,
     GameRoomUpdate,
 )
-from app.schemas.user import UserResponse  # Assuming you have a user schema
 from app.crud.chat_message import create_chat_message
 from app.schemas.chat_message import ChatMessageCreate, ChatMessageResponse
 from app.serializers.user import serialize_user
@@ -32,60 +31,7 @@ from app.games.abstract_game import AbstractGameManager
 
 router = APIRouter()
 
-
-class GameWebSocketMessageType:
-    GAME_STATE = "game_state"
-    GAME_UPDATE = "game_update"
-    GAME_MOVE = "game_move"
-    GAME_ERROR = "game_error"
-
-
 active_games: Dict[int, AbstractGameManager] = {}
-
-
-class WebSocketMessageType:
-    USER_JOINED = "user_joined"
-    USER_LEFT = "user_left"
-    CHAT = "chat"
-    GAME_ACTION = "game_action"
-    ROOM_STATUS_CHANGED = "room_status_changed"
-    PLAYER_STATUS_CHANGED = "player_status_changed"
-    GAME_ENDED = "game_ended"
-
-
-class WebSocketMessage:
-    def __init__(
-            self,
-            type: str,
-            user_id: int,
-            room_id: int,
-            user: Optional[UserResponse] = None,
-            content: Optional[Dict[str, Any]] = None
-    ):
-        self.type = type
-        self.user_id = user_id
-        self.room_id = room_id
-        self.user = user
-        self.content = content or {}
-
-    def to_dict(self):
-        """
-        Convert the message to a dictionary for WebSocket transmission
-        """
-        message_dict = {
-            "type": self.type,
-            "user_id": self.user_id,
-            "room_id": self.room_id,
-        }
-
-        # Add user data if available
-        if self.user:
-            message_dict["user"] = jsonable_encoder(self.user)
-
-        # Merge content
-        message_dict.update(self.content)
-
-        return message_dict
 
 
 @router.websocket("/ws/game/{game_id}/room/{room_id}")
@@ -121,13 +67,7 @@ async def websocket_room_endpoint(
         return
 
     # Convert user to public schema
-    user_public = UserResponse(
-        id=user.id,
-        email=user.email,
-        username=user.username,
-        is_active=user.is_active,
-        created_at=user.created_at,
-    )
+    user_public = serialize_user(user)
 
     try:
 
@@ -143,13 +83,7 @@ async def websocket_room_endpoint(
             room_id=player_data.room_id,
             user_id=player_data.user_id,
             status=player_data.status,
-            user_data=UserResponse(
-                id=player_data.user.id,
-                email=player_data.user.email,
-                username=player_data.user.username,
-                is_active=player_data.user.is_active,
-                created_at=player_data.user.created_at,
-            ),
+            user_data=serialize_user(user),
         )
 
         # Connect to websocket
@@ -168,14 +102,55 @@ async def websocket_room_endpoint(
             )
             await connection_manager.broadcast(room_id, join_message.to_dict())
 
+        # Create a separate task for receiving messages
+        receiver_task = asyncio.create_task(
+            process_websocket_messages(websocket, room_id, user_id, db)
+        )
+
+        # Wait for the receiver task to complete (when disconnected)
+        await receiver_task
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+    finally:
+        # Disconnect and cleanup
+        connection_manager.disconnect(websocket, room_id, user_id)
+        # [existing cleanup code]
+
+
+async def process_websocket_messages(
+        websocket: WebSocket,
+        room_id: int,
+        user_id: int,
+        db: Session
+):
+    """Process incoming WebSocket messages in a separate task"""
+    room = get_game_room(db, room_id)
+    user = get_user(db, user_id)
+    user_public = serialize_user(user)
+
+    try:
         # Main websocket communication loop
         while True:
             data = await websocket.receive_json()
 
             # Handle different message types
             message_type = data.get('type')
+            print("Message received", message_type)
 
-            if message_type == WebSocketMessageType.CHAT:
+            if message_type == WebSocketMessageType.REQUEST_RESPONSE and 'request_id' in data:
+                request_id = data['request_id']
+
+                # Find the corresponding future
+                if request_id in active_games[room_id].pending_requests:
+                    future = active_games[room_id].pending_requests[request_id]
+                    # Set the result to resolve the future
+                    future.set_result(data)
+                    continue
+
+            elif message_type == WebSocketMessageType.CHAT:
                 # Validate message content
                 message_content = data.get('message', '').strip()
                 if not message_content:
@@ -196,13 +171,7 @@ async def websocket_room_endpoint(
                     user_id=db_message.user_id,
                     content=db_message.content,
                     timestamp=db_message.timestamp,
-                    user=UserResponse(
-                        id=user.id,
-                        email=user.email,
-                        username=user.username,
-                        is_active=user.is_active,
-                        created_at=user.created_at
-                    )
+                    user=serialize_user(user)
                 )
 
                 # Broadcast chat message with full details
@@ -307,59 +276,7 @@ async def websocket_room_endpoint(
                 # Get the move data from the message
                 move_data = data.get('move', {})
 
-                # Process the move
-                success, error_message, is_game_over = await active_games[room_id].process_move(user_id, move_data)
-
-                if not success:
-                    await websocket.send_json({
-                        "type": GameWebSocketMessageType.GAME_ERROR,
-                        "message": error_message
-                    })
-                    continue
-
-                # Check if game is over and send stats
-                if not is_game_over:
-                    continue
-
-                # Get game stats
-                game_stats = active_games[room_id].get_game_stats()
-
-                # Broadcast game ended with stats
-                await connection_manager.broadcast(room_id, {
-                    "type": WebSocketMessageType.GAME_ENDED,
-                    "stats": jsonable_encoder(game_stats)
-                })
-
-                # Update room status to completed
-                update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.ENDED))
-
-                # Broadcast room status changed
-                status_message = WebSocketMessage(
-                    type=WebSocketMessageType.ROOM_STATUS_CHANGED,
-                    user_id=user_id,
-                    room_id=room_id,
-                    user=user_public,
-                    content={
-                        "status": RoomStatus.ENDED.value
-                    }
-                )
-                await connection_manager.broadcast(room_id, status_message.to_dict())
-
-                # Update player statuses
-                for player in room.players:
-                    new_status = PlayerStatus.NOT_READY
-                    updated_player = update_player_status(db, room_id, player.user_id, new_status)
-                    status_change_message = WebSocketMessage(
-                        type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
-                        user_id=player.user_id,
-                        room_id=room_id,
-                        user=user_public,
-                        content={
-                            "player": jsonable_encoder(updated_player),
-                            "status": new_status.value
-                        }
-                    )
-                    await connection_manager.broadcast(room_id, status_change_message.to_dict())
+                task = asyncio.create_task(active_games[room_id].process_move(user_id, move_data))
 
     except Exception as e:
         print(f"WebSocket error: {e}")
@@ -380,16 +297,20 @@ async def websocket_room_endpoint(
             )
             await connection_manager.broadcast(room_id, leave_message.to_dict())
 
+
 async def start_game(db, room_id):
     # Get room data to determine players
     room = get_game_room(db, room_id)
 
     # Create game manager instance
-    game_manager = GameManagerFactory.create_game_manager(room, connection_manager)
+    game_manager = GameManagerFactory.create_game_manager(db, room, connection_manager)
+
+    # Store the game manager
+    active_games[room_id] = game_manager
 
     if game_manager:
         # Initialize the game
-        game_manager.initialize_game()
+        task = asyncio.create_task(game_manager.initialize_game())
 
         for player in room.players:
             new_status = PlayerStatus.IN_GAME
@@ -405,9 +326,6 @@ async def start_game(db, room_id):
                 }
             )
             await connection_manager.broadcast(room_id, status_change_message.to_dict())
-
-        # Store the game manager
-        active_games[room_id] = game_manager
 
         # Broadcast initial game state
         for player in room.players:

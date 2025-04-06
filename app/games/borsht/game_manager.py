@@ -1,4 +1,5 @@
 # app/games/borsht/game_manager.py
+import asyncio
 from typing import Dict, Any, Tuple, List, Optional
 import random
 import time
@@ -11,11 +12,23 @@ from app.serializers.game import serialize_players
 from app.games.borsht import game_cards
 
 
+class GameSettings:
+    borscht_recipes_select_count = 3
+    borscht_recipes_select_timeout = 30
+    market_capacity = 8
+    player_hand_limit = 8
+    player_start_hand_size = 5
+
+
 class BorshtManager(AbstractGameManager):
+    game_settings = GameSettings()
+
     """Implementation of Borsht card game logic."""
 
-    def __init__(self, room, connection_manager):
-        super().__init__(room, connection_manager)
+    def __init__(self, db, room, connection_manager):
+        self.is_started = False
+
+        super().__init__(db, room, connection_manager)
         # Ensure we have 2-5 players (based on game rules)
         if len(room.players) < 2 or len(room.players) > 5:
             raise ValueError("Borsht requires 2-5 players")
@@ -35,7 +48,6 @@ class BorshtManager(AbstractGameManager):
         self.discard_pile = []  # Discard pile
 
         # Special states tracking
-        self.market_limit = 8  # Default market size
         self.recipes_revealed = False  # If recipes are revealed due to "Talkative Cook" shkvarka
         self.game_ending = False  # Flag to indicate we're in the final round
         self.first_finisher = None  # Player who completed their recipe first
@@ -43,7 +55,7 @@ class BorshtManager(AbstractGameManager):
         # "shkvarka" cards (Shkvarky) active effects
         self.active_shkvarkas = []  # List of active permanent shkvarka effects
 
-    def initialize_game(self) -> None:
+    async def initialize_game(self) -> None:
         """Initialize the Borsht game state."""
         # Initialize each player's state
         for player_id in self.players:
@@ -58,8 +70,15 @@ class BorshtManager(AbstractGameManager):
 
         # Generate deck, deal cards and set up market
         self._generate_deck()
-        self._deal_initial_cards()
+        await self._deal_initial_cards()
         self._setup_market()
+
+        self.is_started = True
+        for player in self.players:
+            await self.connection_manager.send(self.room_id, player, {
+                "type": "game_state",
+                "state": jsonable_encoder(self.get_state(player)),
+            })
 
     def _generate_deck(self):
         """Generate the ingredient deck based on game rules."""
@@ -73,24 +92,87 @@ class BorshtManager(AbstractGameManager):
         random.shuffle(self.deck)
         random.shuffle(self.recipes)
 
-    def _deal_initial_cards(self):
-        """Deal initial cards to players."""
+    async def _deal_initial_cards(self):
+        """Deal initial cards to players and let them choose recipes simultaneously."""
         # Deal 5 cards to each player
         for player_id in self.players:
-            self.player_hands[player_id] = self.deck[:5]
-            self.deck = self.deck[5:]
+            self.player_hands[player_id] = self.deck[:self.game_settings.player_start_hand_size]
+            self.deck = self.deck[self.game_settings.player_start_hand_size:]
 
-            # Assign a random recipe to each player
-            import random
-            self.player_recipes[player_id] = random.choice(self.recipes)  # TODO: provide select of 3
+        # Dictionary to store recipe options for each player
+        player_recipe_options = {}
+
+        # Assign recipe options to each player (3 options per player)
+        for player_id in self.players:
+            player_recipe_options[player_id] = self.recipes[:self.game_settings.borscht_recipes_select_count]
+            self.recipes = self.recipes[self.game_settings.borscht_recipes_select_count:]
+
+        # Create recipe selection tasks for all players simultaneously
+        selection_tasks = []
+        for player_id, recipe_options in player_recipe_options.items():
+            # Prepare request data
+            request_data = {
+                'recipe_options': recipe_options
+            }
+
+            # Create task for recipe selection request
+            task = asyncio.create_task(
+                self._request_to_player(
+                    player_id=player_id,
+                    request_type='recipe_selection',
+                    request_data=request_data,
+                    timeout=self.game_settings.borscht_recipes_select_timeout
+                )
+            )
+
+            selection_tasks.append((player_id, recipe_options, task))
+
+        # Wait for all recipe selections (or timeouts) to complete
+        for player_id, recipe_options, task in selection_tasks:
+            try:
+                # Wait for the player's response
+                response = await task
+
+                # Check if player responded in time
+                if response.get('timed_out', False):
+                    # If timed out, randomly select a recipe
+                    selected_recipe = random.choice(recipe_options)
+                else:
+                    # Get player's selected recipe
+                    selected_recipe_id = response.get('selected_recipe')
+
+                    # Find the selected recipe
+                    selected_recipe = None
+                    for recipe in recipe_options:
+                        if recipe['id'] == selected_recipe_id:
+                            selected_recipe = recipe
+                            break
+
+                    # If invalid selection, choose randomly
+                    if selected_recipe is None:
+                        selected_recipe = random.choice(recipe_options)
+
+                # Assign the selected recipe to the player
+                self.player_recipes[player_id] = selected_recipe
+
+            except Exception as e:
+                # Log any errors and fallback to random selection
+                print(f"Error during recipe selection for player {player_id}: {e}")
+                selected_recipe = random.choice(recipe_options)
+                self.player_recipes[player_id] = selected_recipe
+
+            await self.connection_manager.send(self.room_id, player_id, {
+                'type': 'recipe_selected',
+                'recipe': selected_recipe['name']
+            })
 
     def _setup_market(self):
         """Set up the initial market with 8 cards."""
         # Draw the top 8 cards from the deck for the market
-        self.market = self.deck[:self.market_limit]
-        self.deck = self.deck[self.market_limit:]
+        self.market = self.deck[:self.game_settings.market_capacity]
+        self.deck = self.deck[self.game_settings.market_capacity:]
 
-    async def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
+    async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Process a player's move."""
         # Verify it's the player's turn
         if str(player_id) != str(self.current_player_id):
@@ -248,23 +330,123 @@ class BorshtManager(AbstractGameManager):
         # Add cards to player's hand
         self.player_hands[player_id].extend(drawn_cards)
 
-        # Check hand limit (8 cards)
-        if len(self.player_hands[player_id]) > 8:
-            # Player must discard down to 8 cards
-            # For simplicity, we'll just discard the excess here
-            # In a real implementation, we'd ask the player which cards to discard
-            excess = len(self.player_hands[player_id]) - 8
-            discard = self.player_hands[player_id][-excess:]
-            self.player_hands[player_id] = self.player_hands[player_id][:-excess]
-            self.discard_pile.extend(discard)
+        # Check hand limit and ask player to discard if needed
+        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if success:
+            self.player_hands[player_id] = updated_hand
+        else:
+            # This shouldn't happen, but just in case
+            return False, "Failed to handle hand limit"
 
         await self.connection_manager.broadcast(self.room_id, {
             'type': 'cards_drawn',
             'player_id': player_id,
-            'count': min(2, len(self.deck))
+            'count': len(drawn_cards)
         })
 
         return True, None
+
+    async def _handle_hand_limit(self, player_id: int, current_hand: list) -> Tuple[bool, list]:
+        """
+        Handle situation when player's hand exceeds the limit.
+        Request player to select cards to discard.
+
+        Args:
+            player_id (int): ID of the player
+            current_hand (list): Current hand of cards
+
+        Returns:
+            Tuple[bool, list]: Success flag and remaining hand after discards
+        """
+        hand_size = len(current_hand)
+        limit = self.game_settings.player_hand_limit
+
+        # Check if hand exceeds limit
+        if hand_size <= limit:
+            return True, current_hand
+
+        # Calculate how many cards need to be discarded
+        cards_to_discard = hand_size - limit
+
+        # Prepare request data
+        request_data = {
+            'hand': current_hand,
+            'discard_count': cards_to_discard,
+            'reason': 'hand_limit'
+        }
+
+        # Send discard selection request to player
+        response = await self._request_to_player(
+            player_id=player_id,
+            request_type='discard_selection',
+            request_data=request_data,
+            timeout=30  # 30 second timeout
+        )
+
+        # Process the response
+        if response.get('timed_out', False):
+            # If timed out, discard random cards
+            discard_indices = random.sample(range(hand_size), cards_to_discard)
+            discard_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
+
+            # Create copies of the hand for manipulation
+            updated_hand = current_hand.copy()
+            discarded_cards = []
+
+            # Remove cards from hand and add to discard pile
+            for idx in discard_indices:
+                discarded_cards.append(updated_hand[idx])
+                updated_hand.pop(idx)
+
+            # Add discarded cards to discard pile
+            self.discard_pile.extend(discarded_cards)
+
+            # Notify about random discard
+            await self.connection_manager.send(self.room_id, player_id, {
+                'type': 'cards_discarded',
+                'player_id': player_id,
+                'count': cards_to_discard
+            })
+
+            return True, updated_hand
+        else:
+            # Get player's selected cards to discard
+            selected_card_ids = response.get('selected_cards', [])
+
+            # Validate selection
+            if len(selected_card_ids) != cards_to_discard:
+                # Invalid selection, fall back to random
+                return await self._handle_hand_limit(player_id, current_hand)
+
+            # Find the cards in the hand
+            updated_hand = current_hand.copy()
+            discarded_cards = []
+
+            # Process each selected card
+            for card_id in selected_card_ids:
+                card_found = False
+                for i, card in enumerate(updated_hand):
+                    if card['id'] == card_id:
+                        discarded_cards.append(card)
+                        updated_hand.pop(i)
+                        card_found = True
+                        break
+
+                if not card_found:
+                    # Card not found, invalid selection
+                    return await self._handle_hand_limit(player_id, current_hand)
+
+            # Add discarded cards to discard pile
+            self.discard_pile.extend(discarded_cards)
+
+            # Notify about discard
+            await self.connection_manager.send(self.room_id, player_id, {
+                'type': 'cards_discarded',
+                'player_id': player_id,
+                'cards': [card['id'] for card in discarded_cards]
+            })
+
+            return True, updated_hand
 
     def _handle_shkvarka(self, player_id, card):
         pass
@@ -409,7 +591,7 @@ class BorshtManager(AbstractGameManager):
                         break
 
             # Replenish market
-            cards_needed = self.market_limit - len(self.market)
+            cards_needed = self.game_settings.market_capacity - len(self.market)
             if cards_needed > 0 and len(self.deck) > 0:
                 new_cards = self.deck[:cards_needed]
                 self.market.extend(new_cards)
@@ -508,7 +690,7 @@ class BorshtManager(AbstractGameManager):
                 self.discard_pile.extend(self.market)
                 self.market = []
 
-                market_size = min(self.market_limit, len(self.deck))
+                market_size = min(self.game_settings.market_capacity, len(self.deck))
                 self.market = self.deck[:market_size]
                 self.deck = self.deck[market_size:]
 
@@ -526,19 +708,70 @@ class BorshtManager(AbstractGameManager):
                 'effect': effect,
             })
 
+        # Check hand limit and ask player to discard if needed
+        limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if limit_success:
+            self.player_hands[player_id] = updated_hand
+
         return success, error_message
+
+    async def _request_to_player(self, player_id: int, request_type: str,
+                                 request_data: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
+        """
+        Send a request to a player and wait for their response.
+
+        Args:
+            player_id (int): ID of the player to request from
+            request_type (str): Type of request (e.g., 'defense_request', 'card_selection')
+            request_data (Dict): Additional data for the request
+            timeout (int): Seconds to wait for response before timing out
+
+        Returns:
+            Dict[str, Any]: Player's response or default response on timeout
+        """
+        # Create a unique request ID
+        request_id = f"{request_type}_user{player_id}_{time.time()}_{random.randint(1000, 9999)}"
+
+        # Prepare the message
+        request_message = {
+            'type': request_type,
+            'request_id': request_id,
+            'timeout': timeout,
+            **request_data  # Include all additional data
+        }
+
+        try:
+            # Send the request to the player
+            await self.connection_manager.send(self.room_id, player_id, request_message)
+
+            # Create a future to wait for the response
+            response_future = asyncio.Future()
+
+            # Store the future somewhere accessible to the websocket handler
+            self.pending_requests[request_id] = response_future
+
+            # Wait for response with timeout
+            try:
+                # This will wait until the future is resolved or timeout occurs
+                response = await asyncio.wait_for(response_future, timeout)
+                return response
+            except asyncio.TimeoutError:
+                # Handle timeout - return default response
+                return {'timed_out': True, 'request_id': request_id}
+            finally:
+                # Clean up the future regardless of outcome
+                if request_id in self.pending_requests:
+                    del self.pending_requests[request_id]
+
+        except Exception as e:
+            # Log any errors that occur
+            print(f"Error in player request: {e}")
+            # Return error response
+            return {'error': str(e), 'request_id': request_id}
 
     async def _check_sour_cream_defense(self, target_player: int, card=None) -> bool:
         """
         Check if target player has and wants to use a Sour Cream defense card.
-        This method will communicate with the target player via websocket and wait for their response.
-
-        Args:
-            target_player (int): ID of the player being targeted
-            card (dict, optional): The card being played against them
-
-        Returns:
-            bool: True if player used Sour Cream defense, False otherwise
         """
         # Check if player has Sour Cream in their hand
         has_sour_cream = False
@@ -557,62 +790,38 @@ class BorshtManager(AbstractGameManager):
         if not has_sour_cream:
             return False  # Player doesn't have a defense card
 
-        # Send websocket request to player asking if they want to use defense
-        # We'll use the room's websocket connections
-        try:
-            # Create a request message with details about the attack
-            defense_request = {
-                'type': 'defense_request',
+        # Prepare data for defense request
+        request_data = {
+            'attacker': self.current_player_id,
+            'card': card,
+            'defense_card': 'sour_cream'
+        }
+
+        # Send defense request to player
+        response = await self._request_to_player(
+            player_id=target_player,
+            request_type='defense_request',
+            request_data=request_data,
+            timeout=30
+        )
+
+        # Check if player chose to use defense
+        defense_used = response.get('use_defense', False) and not response.get('timed_out', False)
+
+        if defense_used:
+            # Remove Sour Cream from player's hand and put it in discard pile
+            defense_card = self.player_hands[target_player].pop(sour_cream_index)
+            self.discard_pile.append(defense_card)
+
+            # Notify all players about the defense
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'card_defended',
+                'defender': target_player,
                 'attacker': self.current_player_id,
-                'card': card,
-                'timeout': 30,  # Give player 30 seconds to decide
-                'request_id': f"defense_{time.time()}"
-            }
+                'defense_card': 'sour_cream'
+            })
 
-            # Send message to player through the room's websocket
-            await self.connection_manager.send(self.room_id, target_player, defense_request)
-
-            # Set up a timer to wait for response (timeout after 30 seconds)
-            response_received = False
-            start_time = time.time()
-            defense_used = False
-
-            # Wait for response with timeout
-            while time.time() - start_time < 30 and not response_received:
-                # This would normally be handled by an async framework # TODO: async
-                # For this example, we'll simulate the waiting pattern
-                time.sleep(0.5)  # Small sleep to prevent CPU spinning
-
-                # Check if we've received a response (this would be set by the websocket handler)
-                # In a real implementation, this would use proper async/await patterns
-                if hasattr(self, f"defense_response_{defense_request['request_id']}"):
-                    response = getattr(self, f"defense_response_{defense_request['request_id']}")
-                    response_received = True
-                    defense_used = response.get('use_defense', False)
-                    delattr(self, f"defense_response_{defense_request['request_id']}")
-
-            # If player chose to use defense or timed out (default to not using)
-            if defense_used:
-                # Remove Sour Cream from player's hand and put it in discard pile
-                defense_card = self.player_hands[target_player].pop(sour_cream_index)
-                self.discard_pile.append(defense_card)
-
-                # Notify all players about the defense
-                await  self.connection_manager.broadcast(self.room_id, {
-                    'type': 'card_defended',
-                    'defender': target_player,
-                    'attacker': self.current_player_id,
-                    'defense_card': 'sour_cream'
-                })
-
-                return True
-
-            return False
-
-        except Exception as e:
-            # Log the error
-            print(f"Error in defense request: {e}")
-            return False  # Default to no defense on errors
+        return defense_used
 
     async def _handle_market_refresh(self) -> None:
         """
@@ -623,12 +832,12 @@ class BorshtManager(AbstractGameManager):
         self.market = []
 
         # Check if we need to reshuffle the deck
-        if len(self.deck) < self.market_limit and len(self.discard_pile) > 0:
+        if len(self.deck) < self.game_settings.market_capacity and len(self.discard_pile) > 0:
             self._reshuffle_discard()
 
         # Get new cards from deck
-        self.market = self.deck[:self.market_limit]
-        self.deck = self.deck[self.market_limit:]
+        self.market = self.deck[:self.game_settings.market_capacity]
+        self.deck = self.deck[self.game_settings.market_capacity:]
 
         await self.connection_manager.broadcast(self.room_id, {
             'type': 'market_refreshed',
@@ -721,7 +930,7 @@ class BorshtManager(AbstractGameManager):
         self.market.extend([card for _, card in hand_card_objects])
 
         # Replenish market if needed
-        cards_needed = self.market_limit - len(self.market)
+        cards_needed = self.game_settings.market_capacity - len(self.market)
         if cards_needed > 0 and len(self.deck) > 0:
             new_cards = self.deck[:cards_needed]
             self.market.extend(new_cards)
@@ -733,6 +942,10 @@ class BorshtManager(AbstractGameManager):
             'hand_cards': hand_cards,
             'market_cards': market_cards,
         })
+
+        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if success:
+            self.player_hands[player_id] = updated_hand
 
         return True, None
 
@@ -883,7 +1096,7 @@ class BorshtManager(AbstractGameManager):
 
         return scores
 
-    def get_state(self, player_id: int) -> Dict[str, Any]:
+    def get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
         """
         Get current game state for sending to player.
 
@@ -900,13 +1113,16 @@ class BorshtManager(AbstractGameManager):
         Returns:
             Dict[str, Any]: Sanitized game state
         """
+        if not self.is_started:  # TODO: resend pending requests
+            return None
+
         state = dict(
             # Basic game state information
             current_player=self.current_player_id,
             is_game_over=self.is_game_over,
             game_ending=self.game_ending,
             first_finisher=self.first_finisher,
-            market_limit=self.market_limit,
+            market_limit=self.game_settings.market_capacity,
             recipes_revealed=self.recipes_revealed,
             cards_in_deck=len(self.deck),
 

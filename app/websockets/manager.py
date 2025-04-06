@@ -1,6 +1,9 @@
 # app/websockets/manager.py
-from typing import Dict, Set, Any
+from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket
+from fastapi.encoders import jsonable_encoder
+
+from app.schemas.user import UserResponse
 
 
 class ConnectionManager:
@@ -41,9 +44,9 @@ class ConnectionManager:
         if user_id in self.active_connections.get(room_id, dict()):
             await self.active_connections[room_id][user_id].send_json(message)
 
-    def get_room_connections(self, room_id: int) -> Set[WebSocket]:
+    def get_room_connections(self, room_id: int) -> dict[int, WebSocket]:
         """Get all connections for a specific room"""
-        return self.active_connections.get(room_id, set())
+        return self.active_connections.get(room_id, dict())
 
     def get_user_room(self, user_id: int) -> int:
         """Get the room a user is currently in"""
@@ -52,3 +55,56 @@ class ConnectionManager:
 
 # Create a singleton instance
 connection_manager = ConnectionManager()
+
+
+class GameWebSocketMessageType:
+    GAME_STATE = "game_state"
+    GAME_UPDATE = "game_update"
+    GAME_MOVE = "game_move"
+    GAME_ERROR = "game_error"
+
+
+class WebSocketMessageType:
+    USER_JOINED = "user_joined"
+    USER_LEFT = "user_left"
+    CHAT = "chat"
+    GAME_ACTION = "game_action"
+    REQUEST_RESPONSE = "request_response"
+    ROOM_STATUS_CHANGED = "room_status_changed"
+    PLAYER_STATUS_CHANGED = "player_status_changed"
+    GAME_ENDED = "game_ended"
+
+
+class WebSocketMessage:
+    def __init__(
+            self,
+            type: str,
+            user_id: int,
+            room_id: int,
+            user: Optional[UserResponse] = None,
+            content: Optional[Dict[str, Any]] = None
+    ):
+        self.type = type
+        self.user_id = user_id
+        self.room_id = room_id
+        self.user = user
+        self.content = content or {}
+
+    def to_dict(self):
+        """
+        Convert the message to a dictionary for WebSocket transmission
+        """
+        message_dict = {
+            "type": self.type,
+            "user_id": self.user_id,
+            "room_id": self.room_id,
+        }
+
+        # Add user data if available
+        if self.user:
+            message_dict["user"] = jsonable_encoder(self.user)
+
+        # Merge content
+        message_dict.update(self.content)
+
+        return message_dict

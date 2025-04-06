@@ -12,8 +12,8 @@ from app.serializers.game import serialize_players
 class TicTacToeManager(AbstractGameManager):
     """Implementation of Tic Tac Toe game logic."""
 
-    def __init__(self, room, connection_manager):
-        super().__init__(room, connection_manager)
+    def __init__(self, db, room, connection_manager):
+        super().__init__(db, room, connection_manager)
         # Ensure we have exactly 2 players
         if len(room.players) != 2:
             raise ValueError("Tic Tac Toe requires exactly 2 players")
@@ -26,14 +26,14 @@ class TicTacToeManager(AbstractGameManager):
         self.moves_count = {player.user_id: 0 for player in room.players}
         self.player_usernames = {}  # Will be populated later
 
-    def initialize_game(self) -> None:
+    async def initialize_game(self) -> None:
         """Initialize Tic Tac Toe board and game state."""
         self.board = [None] * 9  # 3x3 board flattened to 1D array
         self.is_game_over = False
         self.winner = None
         self.current_player_index = 0  # First player starts
 
-    async def process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
+    async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Process a player's move."""
         # Verify it's the player's turn
         if str(player_id) != str(self.current_player_id):
