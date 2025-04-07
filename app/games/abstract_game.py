@@ -18,6 +18,7 @@ class AbstractGameManager(ABC):
     def __init__(self, db, room, connection_manager: ConnectionManager):
         self.db = db
         self.pending_requests = {}
+        self.sent_requests = {}
         self.connection_manager = connection_manager
         self.room_id = room.id
         self.players = {player.user_id: player for player in room.players}
@@ -121,6 +122,11 @@ class AbstractGameManager(ABC):
         Returns:
             Tuple of (is_game_over, winner_id or None if draw)
         """
+        pass
+
+    @abstractmethod
+    async def resend_pending_requests(self, user_id: int) -> None:
+        """Resend pending requests to user."""
         pass
 
     @abstractmethod

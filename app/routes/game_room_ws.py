@@ -144,8 +144,8 @@ async def process_websocket_messages(
                 request_id = data['request_id']
 
                 # Find the corresponding future
-                if request_id in active_games[room_id].pending_requests:
-                    future = active_games[room_id].pending_requests[request_id]
+                if request_id in active_games[room_id].pending_requests[user_id]:
+                    future = active_games[room_id].pending_requests[user_id][request_id]
                     # Set the result to resolve the future
                     future.set_result(data)
                     continue
@@ -256,6 +256,7 @@ async def process_websocket_messages(
                         "type": GameWebSocketMessageType.GAME_STATE,
                         "state": jsonable_encoder(game_state),
                     })
+                    await active_games[room_id].resend_pending_requests(user_id)
                 elif room.status.name == RoomStatus.IN_PROGRESS.name:
                     await start_game(db, room_id)
                 else:

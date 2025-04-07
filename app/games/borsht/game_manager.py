@@ -18,6 +18,7 @@ class GameSettings:
     market_capacity = 8
     player_hand_limit = 8
     player_start_hand_size = 5
+    market_exchange_tax = 0
 
 
 class BorshtManager(AbstractGameManager):
@@ -214,6 +215,11 @@ class BorshtManager(AbstractGameManager):
             # Exchange ingredients with the market
             success, error_message = await self._handle_exchange(player_id, move_data)
 
+        elif action == 'free_market_refresh':
+            # Refresh the market
+            success, error_message = await self._handle_free_market_refresh()
+            return success, error_message, self.is_game_over
+
         else:
             error_message = "Invalid action type"
 
@@ -249,6 +255,14 @@ class BorshtManager(AbstractGameManager):
             })
 
         return success, error_message, self.is_game_over
+
+    async def _handle_free_market_refresh(self) -> tuple[bool, Optional[str]]:
+        if not self._is_market_free_refresh_available():
+            return False, "Free market refresh not available"
+
+        await self._handle_market_refresh()
+
+        return True, None
 
     async def _handle_add_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Handle adding an ingredient to the player's borsht."""
@@ -372,7 +386,8 @@ class BorshtManager(AbstractGameManager):
         request_data = {
             'hand': current_hand,
             'discard_count': cards_to_discard,
-            'reason': 'hand_limit'
+            'reason': 'hand_limit',
+            'your_recipe': self.player_recipes[player_id],
         }
 
         # Send discard selection request to player
@@ -384,8 +399,8 @@ class BorshtManager(AbstractGameManager):
         )
 
         # Process the response
-        if response.get('timed_out', False):
-            # If timed out, discard random cards
+        if response.get('timed_out', False) or response.get('random_discard', False):
+            # discard random cards
             discard_indices = random.sample(range(hand_size), cards_to_discard)
             discard_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
 
@@ -426,7 +441,7 @@ class BorshtManager(AbstractGameManager):
             for card_id in selected_card_ids:
                 card_found = False
                 for i, card in enumerate(updated_hand):
-                    if card['id'] == card_id:
+                    if card['uid'] == card_id:
                         discarded_cards.append(card)
                         updated_hand.pop(i)
                         card_found = True
@@ -744,24 +759,29 @@ class BorshtManager(AbstractGameManager):
             # Send the request to the player
             await self.connection_manager.send(self.room_id, player_id, request_message)
 
+            if player_id not in self.pending_requests:
+                self.pending_requests[player_id] = {}
+
             # Create a future to wait for the response
             response_future = asyncio.Future()
 
             # Store the future somewhere accessible to the websocket handler
-            self.pending_requests[request_id] = response_future
+            self.pending_requests[player_id][request_id] = response_future
+            self.sent_requests[request_id] = request_message
 
             # Wait for response with timeout
             try:
                 # This will wait until the future is resolved or timeout occurs
-                response = await asyncio.wait_for(response_future, timeout)
+                response = await asyncio.wait_for(response_future, timeout)  # TODO: Time delay ?
                 return response
             except asyncio.TimeoutError:
                 # Handle timeout - return default response
                 return {'timed_out': True, 'request_id': request_id}
             finally:
                 # Clean up the future regardless of outcome
-                if request_id in self.pending_requests:
-                    del self.pending_requests[request_id]
+                if request_id in self.pending_requests[player_id]:
+                    del self.pending_requests[player_id][request_id]
+                    del self.sent_requests[request_id]
 
         except Exception as e:
             # Log any errors that occur
@@ -823,26 +843,48 @@ class BorshtManager(AbstractGameManager):
 
         return defense_used
 
-    async def _handle_market_refresh(self) -> None:
+    async def _handle_market_refresh(self, cards_to_discard=None) -> None:
         """
         Discard all current market cards and replace them with new cards from the deck.
         """
-        # Move all current market cards to discard pile
-        self.discard_pile.extend(self.market)
-        self.market = []
+        # Move selected or all current market cards to discard pile
+        cards = cards_to_discard or self.market
+
+        for card in cards:
+            self.market.remove(card)
+        self.discard_pile.extend(cards)
+
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'market_cards_discarded',
+            'cards': cards,
+        })
+
+        await self._handle_market_refill()
+
+    async def _handle_market_refill(self) -> None:
+        cards_to_add = self.game_settings.market_capacity - len(self.market)
 
         # Check if we need to reshuffle the deck
-        if len(self.deck) < self.game_settings.market_capacity and len(self.discard_pile) > 0:
+        if len(self.deck) < cards_to_add and len(self.discard_pile) > 0:
             self._reshuffle_discard()
 
         # Get new cards from deck
-        self.market = self.deck[:self.game_settings.market_capacity]
-        self.deck = self.deck[self.game_settings.market_capacity:]
+        new_cards = self.deck[:cards_to_add]
+        self.market = self.market.extend(new_cards)
+        self.deck = self.deck[cards_to_add:]
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'market_refreshed',
-            # 'duplicates_found': has_duplicates
+            'type': 'market_cards_added',
+            'cards': new_cards,
         })
+
+    async def _handle_put_cards_to_market(self, cards):
+        self.market.extend(cards)
+
+        if len(self.market) > self.game_settings.market_capacity:
+            cards_to_discard = self.game_settings.market_capacity - len(self.market)
+            cards = self.market[cards_to_discard:]
+            await self._handle_market_refresh(cards)
 
     def _reshuffle_discard(self) -> None:
         """
@@ -877,40 +919,39 @@ class BorshtManager(AbstractGameManager):
         hand_total_cost = 0
         hand_card_objects = []
 
-        for card_id in hand_cards:
+        for card_uid in hand_cards:
             card_found = False
             for i, card in enumerate(self.player_hands[player_id]):
-                if card['id'] == card_id:
+                if card['uid'] == card_uid:
                     hand_total_cost += card['cost']
                     hand_card_objects.append((i, card))
                     card_found = True
                     break
             if not card_found:
-                return False, f"Card {card_id} not in hand"
+                return False, f"Card {card_uid} not in hand"
 
         market_total_cost = 0
         market_card_objects = []
 
-        for card_id in market_cards:
+        for card_uid in market_cards:
             card_found = False
             for i, card in enumerate(self.market):
-                if card['id'] == card_id:
+                if card['uid'] == card_uid:
                     market_total_cost += card['cost']
                     market_card_objects.append((i, card))
                     card_found = True
                     break
             if not card_found:
-                return False, f"Card {card_id} not in market"
+                return False, f"Card {card_uid} not in market"
 
-        # Validate exchange value
-        if len(hand_cards) == 1:
-            # 1-to-many: hand card must be >= market cards total
-            if hand_total_cost < market_total_cost:
-                return False, f"Hand card value ({hand_total_cost}) must be >= market cards total ({market_total_cost})"
-        else:
-            # many-to-1: hand cards total must be >= market card
-            if hand_total_cost < market_total_cost:
-                return False, f"Hand cards total ({hand_total_cost}) must be >= market card value ({market_total_cost})"
+        price = market_total_cost + self.game_settings.market_exchange_tax
+        if hand_total_cost < price:
+            if not self.game_settings.market_exchange_tax:
+                message = f"Hand card value ({hand_total_cost}) must be >= market cards total ({price})"
+            else:
+                message = f"Hand card value ({hand_total_cost}) must be >= market cards total plus {self.game_settings.market_exchange_tax} (sum {price})"
+
+            return False, message
 
         # Exchange is valid, perform it
         # Remove cards from player's hand
@@ -1098,6 +1139,13 @@ class BorshtManager(AbstractGameManager):
 
         return scores
 
+    def _is_market_free_refresh_available(self):
+        return
+
+    async def resend_pending_requests(self, user_id: int) -> None:
+        for request in self.pending_requests.get(user_id, dict()):
+            await self.connection_manager.send(self.room_id, user_id, self.sent_requests[request])
+
     def get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
         """
         Get current game state for sending to player.
@@ -1115,7 +1163,7 @@ class BorshtManager(AbstractGameManager):
         Returns:
             Dict[str, Any]: Sanitized game state
         """
-        if not self.is_started:  # TODO: resend pending requests
+        if not self.is_started:
             return None
 
         state = dict(
@@ -1130,6 +1178,7 @@ class BorshtManager(AbstractGameManager):
 
             # Market information
             market=self.market.copy(),
+            free_refresh=self._is_market_free_refresh_available(),
 
             # Discard pile - only show top card
             discard_pile_size=len(self.discard_pile),
