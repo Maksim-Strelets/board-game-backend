@@ -255,12 +255,12 @@ class BorshtManager(AbstractGameManager):
         if 'card_id' not in move_data:
             return False, "Card ID required to add ingredient"
 
-        card_id = move_data['card_id']
+        card_uid = move_data['card_id']
 
         # Find the card in player's hand
         card_index = None
         for i, card in enumerate(self.player_hands[player_id]):
-            if card['id'] == card_id:
+            if card['uid'] == card_uid:
                 card_index = i
                 break
 
@@ -279,7 +279,7 @@ class BorshtManager(AbstractGameManager):
 
         # Check if player already has this ingredient type
         for borsht_card in self.player_borsht[player_id]:
-            if borsht_card['id'] == card_id:
+            if borsht_card['id'] == card['id']:
                 return False, "You already have this ingredient in your borsht"
 
         # Add the card to the player's borsht
@@ -456,12 +456,12 @@ class BorshtManager(AbstractGameManager):
         if 'card_id' not in move_data:
             return False, "Card ID required to play special ingredient"
 
-        card_id = move_data['card_id']
+        card_uid = move_data['card_id']
 
         # Find the card in player's hand
         card_index = None
         for i, card in enumerate(self.player_hands[player_id]):
-            if card['id'] == card_id:
+            if card['uid'] == card_uid:
                 card_index = i
                 break
 
@@ -959,9 +959,11 @@ class BorshtManager(AbstractGameManager):
         recipe = self.player_recipes[player_id]
         recipe_ingredients = recipe['ingredients']
 
-        player_ingredients = self.player_borsht[player_id]
+        player_borsht = self.player_borsht[player_id]
 
-        return all([ing in player_ingredients for ing in recipe_ingredients])
+        player_borsht = [card for card in player_borsht if card['type'] in ['regular', 'rare'] or card['id'] == 'vinnik_lard']
+
+        return len(player_borsht) >= len(recipe_ingredients)
 
     def check_game_over(self) -> Tuple[bool, Optional[int]]:
         """
