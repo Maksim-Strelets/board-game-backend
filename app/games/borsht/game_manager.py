@@ -17,6 +17,7 @@ class SpecialCardsProps:
     olive_oil_select_count = 2
     cinnamon_select_count = 1
     ginger_select_count = 2
+    chili_pepper_discard_count = 1
 
 
 class GameSettings:
@@ -495,51 +496,7 @@ class BorshtManager(AbstractGameManager):
 
         # Handle different special card effects
         if effect == 'steal_or_discard':  # Chili Pepper
-            if 'target_player' not in move_data or 'target_card' not in move_data or 'action_type' not in move_data:
-                return False, "Target player, target card, and action type required for this effect"
-
-            target_player = move_data['target_player']
-            target_card = move_data['target_card']
-            action_type = move_data['action_type']  # 'steal' or 'discard'
-
-            await self.connection_manager.broadcast(self.room_id, {
-                'type': 'special_effect',
-                'effect': 'steal_or_discard',
-                'player_id': player_id,
-                'target_player': target_player,
-                'target_card': target_card,
-                'action_type': action_type
-            })
-
-            # Check if target player has a sour cream defense
-            defense_used = await self._check_sour_cream_defense(target_player, card)
-            if defense_used:
-                # Remove the card from player's hand and add to discard pile
-                self.player_hands[player_id].pop(card_index)
-                self.discard_pile.append(card)
-                return True, "Target defended with Sour Cream"
-
-            # Find the target card in target player's borsht
-            target_card_obj = None
-            for i, c in enumerate(self.player_borsht[target_player]):
-                if c['id'] == target_card:
-                    target_card_obj = c
-                    target_card_index = i
-                    break
-
-            if target_card_obj is None:
-                return False, "Target card not found in target player's borsht"
-
-            if action_type == 'steal': # TODO: check card already in borscht
-                # Move card from target player's borsht to current player's borsht
-                self.player_borsht[target_player].pop(target_card_index)
-                self.player_borsht[player_id].append(target_card_obj)
-            else:  # 'discard'
-                # Remove card from target player's borsht
-                self.player_borsht[target_player].pop(target_card_index)
-                self.discard_pile.append(target_card_obj)
-
-            success = True
+            success, error_message = await self._handle_chili_pepper(player_id, move_data)
 
         elif effect == 'discard_or_take':  # Black Pepper
             if 'effect_choice' not in move_data:
@@ -900,6 +857,132 @@ class BorshtManager(AbstractGameManager):
             self.player_hands[player_id] = updated_hand
         else:
             return False, "Failed to handle hand limit after selecting cards"
+
+        return True, None
+
+    async def _handle_chili_pepper(self, player_id, move_data):
+        """
+        Handle the Chili Pepper special card effect.
+        Allows player to either steal or discard a card from target player's borsht.
+
+        Args:
+            player_id (int): The ID of the player who played the Chili Pepper card
+            move_data (Dict[str, Any]): Data containing card_id, target_player, target_cards, and action_type
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # 1. Validate player has the card in hand
+        card_uid = move_data.get('card_id')
+        if not card_uid:
+            return False, "Card ID required to play Chili Pepper"
+
+        card_index = None
+        card = None
+        for i, c in enumerate(self.player_hands[player_id]):
+            if c['uid'] == card_uid:
+                card_index = i
+                card = c
+                break
+
+        if card_index is None:
+            return False, "Card not in hand"
+
+        if card['id'] != 'chili_pepper':
+            return False, "Selected card is not Chili Pepper"
+
+        # Validate required parameters
+        target_player = move_data.get('target_player')
+        target_cards = move_data.get('target_cards', [])
+        action_type = move_data.get('action_type')  # 'steal' or 'discard'
+
+        if not target_player or not target_cards or not action_type:
+            return False, "Target player, target cards, and action type required"
+
+        if action_type not in ['steal', 'discard']:
+            return False, "Invalid action type. Must be 'steal' or 'discard'"
+
+        # Validate target player
+        if target_player not in self.players or target_player == self.first_finisher:
+            return False, "Invalid target player"
+
+        # Validate target cards
+        select_count = self.game_settings.special_cards.chili_pepper_discard_count
+        if len(target_cards) != select_count:
+            return False, f"Should be targeting at {select_count} cards"
+
+        # 2. Validate all target cards exist in target player's borsht
+        target_card_objects = []
+        for card_uid in target_cards:
+            found = False
+            for i, c in enumerate(self.player_borsht[target_player]):
+                if c['uid'] == card_uid:
+                    target_card_objects.append((i, c))
+                    found = True
+                    break
+
+            if not found:
+                return False, f"Card {card_uid} not found in target player's borsht"
+
+        # Broadcast the intended action
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'special_effect',
+            'effect': 'chili_pepper',
+            'player_id': player_id,
+            'target_player': target_player,
+            'target_cards': target_cards,
+            'action_type': action_type
+        })
+
+        # 3. Check if target player has and wants to use a Sour Cream defense
+        defense_used = await self._check_sour_cream_defense(target_player, card)
+
+        # 4. Process the effect if no defense used
+        if defense_used:
+            # Remove the Chili Pepper from player's hand and add to discard pile
+            self.player_hands[player_id].pop(card_index)
+            self.discard_pile.append(card)
+
+            # 5. Broadcast defense result
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'defense_successful',
+                'attacker': player_id,
+                'defender': target_player,
+                'card': 'chili_pepper'
+            })
+
+            return True, "Target defended with Sour Cream"
+
+        # Process the effect based on action type
+        # Sort indices in reverse to avoid shifting issues when removing
+        target_card_objects.sort(key=lambda x: x[0], reverse=True)
+
+        for idx, target_card in target_card_objects:
+            # Remove the card from target player's borsht
+            self.player_borsht[target_player].pop(idx)
+
+            if action_type == 'steal':
+                # Check if player already has this card in their borsht
+                already_has = any(c['id'] == target_card['id'] for c in self.player_borsht[player_id])
+
+                if already_has:
+                    # Can't have duplicates in borsht, discard instead
+                    self.discard_pile.append(target_card)
+                else:
+                    # Add to current player's borsht
+                    self.player_borsht[player_id].append(target_card)
+            else:  # 'discard'
+                # Add to discard pile
+                self.discard_pile.append(target_card)
+
+        # 5. Broadcast the result
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'chili_pepper_effect_applied',
+            'player_id': player_id,
+            'target_player': target_player,
+            'target_cards': target_cards,
+            'action_type': action_type
+        })
 
         return True, None
 
