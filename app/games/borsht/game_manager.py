@@ -843,6 +843,78 @@ class BorshtManager(AbstractGameManager):
 
         return defense_used
 
+    async def _handle_market_limit(self) -> None:
+        if len(self.market) < self.game_settings.market_capacity:
+            await self._handle_market_refill()
+        if len(self.market) > self.game_settings.market_capacity:
+            # Calculate how many cards need to be discarded
+            cards_to_discard = len(self.market) - self.game_settings.market_capacity
+
+            # Prepare request data
+            request_data = {
+                'market': self.market,
+                'discard_count': cards_to_discard,
+                'reason': 'market_limit',
+            }
+
+            # Send discard selection request to player
+            response = await self._request_to_player(
+                player_id=self.current_player_id,
+                request_type='discard_selection',
+                request_data=request_data,
+                timeout=30  # 30 second timeout
+            )
+
+            # Create copies of the hand for manipulation
+            updated_market = self.market.copy()
+            discarded_cards = []
+
+            # Process the response
+            if response.get('timed_out', False) or response.get('random_discard', False):
+                # discard random cards
+                discard_indices = random.sample(range(len(self.market)), cards_to_discard)
+                discard_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
+
+                # Remove cards from hand and add to discard pile
+                for idx in discard_indices:
+                    discarded_cards.append(updated_market[idx])
+                    updated_market.pop(idx)
+
+            else:
+                # Get player's selected cards to discard
+                selected_card_ids = response.get('selected_cards', [])
+
+                # Validate selection
+                if len(selected_card_ids) != cards_to_discard:
+                    # Invalid selection, fall back to random
+                    await self._handle_market_limit()
+                    return
+
+                # Process each selected card
+                for card_uid in selected_card_ids:
+                    card_found = False
+                    for i, card in enumerate(updated_market):
+                        if card['uid'] == card_uid:
+                            discarded_cards.append(card)
+                            updated_market.pop(i)
+                            card_found = True
+                            break
+
+                    if not card_found:
+                        # Card not found, invalid selection
+                        await self._handle_market_limit()
+                        return
+
+            # Add discarded cards to discard pile
+            self.discard_pile.extend(discarded_cards)
+
+            # Notify about discard
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': 'cards_from_market_discarded',
+                'cards': [card['id'] for card in discarded_cards]
+            })
+            self.market = updated_market
+
     async def _handle_market_refresh(self, cards_to_discard=None) -> None:
         """
         Discard all current market cards and replace them with new cards from the deck.
@@ -987,6 +1059,8 @@ class BorshtManager(AbstractGameManager):
         success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
         if success:
             self.player_hands[player_id] = updated_hand
+
+        await self._handle_market_limit()
 
         return True, None
 
