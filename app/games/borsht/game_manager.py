@@ -12,13 +12,19 @@ from app.serializers.game import serialize_players
 from app.games.borsht import game_cards
 
 
+class SpecialCardsProps:
+    olive_oil_look_count = 5
+    olive_oil_select_count = 2
+
+
 class GameSettings:
+    general_player_select_timeout = 30
     borscht_recipes_select_count = 3
-    borscht_recipes_select_timeout = 30
     market_capacity = 8
     player_hand_limit = 8
     player_start_hand_size = 5
     market_exchange_tax = 0
+    special_cards = SpecialCardsProps()
 
 
 class BorshtManager(AbstractGameManager):
@@ -122,7 +128,7 @@ class BorshtManager(AbstractGameManager):
                     player_id=player_id,
                     request_type='recipe_selection',
                     request_data=request_data,
-                    timeout=self.game_settings.borscht_recipes_select_timeout
+                    timeout=self.game_settings.general_player_select_timeout,
                 )
             )
 
@@ -395,7 +401,7 @@ class BorshtManager(AbstractGameManager):
             player_id=player_id,
             request_type='discard_selection',
             request_data=request_data,
-            timeout=30  # 30 second timeout
+            timeout=self.game_settings.general_player_select_timeout,
         )
 
         # Process the response
@@ -643,45 +649,7 @@ class BorshtManager(AbstractGameManager):
                 return False, "Selected card not found in discard pile"
 
         elif effect == 'look_top_5':  # Olive Oil
-            # Look at top 5 cards and take 2
-            if len(self.deck) < 5:
-                # If not enough cards, shuffle the discard pile
-                if len(self.discard_pile) > 0:
-                    import random
-                    self.deck.extend(self.discard_pile)
-                    random.shuffle(self.deck)
-                    self.discard_pile = []
-
-            if len(self.deck) < 2:
-                return False, "Not enough cards in deck"
-
-            # Look at top 5 cards (or as many as available)
-            look_count = min(5, len(self.deck))
-            top_cards = self.deck[:look_count]
-
-            if 'selected_cards' not in move_data or len(move_data['selected_cards']) != 2:
-                return False, "Must select 2 cards from the top 5"
-
-            # Player selected 2 cards to keep
-            selected_indices = []
-            for card_id in move_data['selected_cards']:
-                for i, card in enumerate(top_cards):
-                    if card['id'] == card_id and i not in selected_indices:
-                        selected_indices.append(i)
-                        self.player_hands[player_id].append(card)
-                        break
-
-            if len(selected_indices) != 2:
-                return False, "Invalid card selection"
-
-            # Remove selected cards and put the rest back on top of deck
-            new_deck = []
-            for i, card in enumerate(top_cards):
-                if i not in selected_indices:
-                    new_deck.append(card)
-
-            self.deck = new_deck + self.deck[look_count:]
-            success = True
+            success, error_message = await self._handle_olive_oil()
 
         elif effect == 'refresh_market':  # Paprika
             await self._handle_market_refresh()
@@ -712,23 +680,105 @@ class BorshtManager(AbstractGameManager):
             success = True
 
         # Remove the card from player's hand and add to discard pile
+        if not success:
+            return success, error_message
+
         self.player_hands[player_id].pop(card_index)
         self.discard_pile.append(card)
 
-        if success:
-            await self.connection_manager.broadcast(self.room_id, {
-                'type': 'special_played',
-                'player_id': player_id,
-                'special_card': card_id,
-                'effect': effect,
-            })
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'special_played',
+            'player_id': player_id,
+            'special_card': card['id'],
+            'effect': effect,
+        })
 
         # Check hand limit and ask player to discard if needed
         limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
         if limit_success:
             self.player_hands[player_id] = updated_hand
 
-        return success, error_message
+        return True, None
+
+    async def _handle_olive_oil(self):
+        look_count = self.game_settings.special_cards.olive_oil_look_count
+        select_count = self.game_settings.special_cards.olive_oil_select_count
+
+        # Look at top 5 cards and take 2
+        if len(self.deck) < look_count:
+            # If not enough cards, shuffle the discard pile
+            self._reshuffle_discard()
+
+        if len(self.deck) < select_count:
+            return False, "Not enough cards in deck"
+
+        # Look at top n cards (or as many as available)
+        top_cards = self.deck[:look_count]
+
+        request_data = {
+            'select_count': select_count,
+            'cards': top_cards,
+            'your_hand': self.player_hands[self.current_player_id],
+        }
+
+        response = await self._request_to_player(
+            player_id=self.current_player_id,
+            request_type='olive_oil_selection',
+            request_data=request_data,
+            timeout=self.game_settings.general_player_select_timeout,
+        )
+
+        # Process the response
+        if response.get('timed_out', False) or response.get('random_select', False):
+            # select random cards
+            select_indices = random.sample(range(select_count), len(top_cards))
+            select_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
+
+            # Create copies of the hand for manipulation
+            updated_top = top_cards.copy()
+            selected_cards = []
+
+            # Remove cards from hand and add to discard pile
+            for idx in top_cards:
+                selected_cards.append(updated_top[idx])
+                updated_top.pop(idx)
+        else:
+            # Get player's selected cards to discard
+            selected_card_ids = response.get('selected_cards', [])
+
+            # Validate selection
+            if len(selected_card_ids) != select_count:
+                # Invalid selection, fall back to random
+                return await self._handle_olive_oil()
+
+            # Find the cards in the hand
+            updated_top = top_cards.copy()
+            selected_cards = []
+
+            # Process each selected card
+            for card_id in selected_card_ids:
+                card_found = False
+                for i, card in enumerate(updated_top):
+                    if card['uid'] == card_id:
+                        selected_cards.append(card)
+                        updated_top.pop(i)
+                        card_found = True
+                        break
+
+                if not card_found:
+                    # Card not found, invalid selection
+                    return await self._handle_olive_oil()
+
+        self.deck = updated_top + self.deck[look_count:]
+        self.player_hands[self.current_player_id].extend(selected_cards)
+
+        # Notify about random select
+        await self.connection_manager.send(self.room_id, self.current_player_id, {
+            'type': 'cards_selected',
+            'cards': selected_cards,
+        })
+
+        return True, None
 
     async def _request_to_player(self, player_id: int, request_type: str,
                                  request_data: Dict[str, Any], timeout: int = 30) -> Dict[str, Any]:
@@ -823,7 +873,7 @@ class BorshtManager(AbstractGameManager):
             player_id=target_player,
             request_type='defense_request',
             request_data=request_data,
-            timeout=30
+            timeout=self.game_settings.general_player_select_timeout,
         )
 
         # Check if player chose to use defense
@@ -863,7 +913,7 @@ class BorshtManager(AbstractGameManager):
                 player_id=self.current_player_id,
                 request_type='discard_selection',
                 request_data=request_data,
-                timeout=30  # 30 second timeout
+                timeout=self.game_settings.general_player_select_timeout,
             )
 
             # Create copies of the hand for manipulation

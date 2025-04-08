@@ -49,7 +49,7 @@ base_cards = [
     *[{"id": "sour_cream", "type": "special", "name": "Сметана", "cost": 4, "effect": "defense", "effect_description": "Скиньте, щоб захиститись від ефектів карт «Чорний перець» або «Перець вогник»."} for _ in range(4)],
     *[{"id": "ginger", "type": "special", "name": "Імбир", "cost": 3, "effect": "take_market", "effect_description": "Візьміть на руку 2 будь-які інгредієнти з ринку і поповніть ринок."} for _ in range(3)],
     *[{"id": "cinnamon", "type": "special", "name": "Кориця", "cost": 5, "effect": "take_discard", "effect_description": "Перегляньте скид і візьміть на руку 1 карту інгредієнта."} for _ in range(3)],
-    *[{"id": "olive_oil", "type": "special", "name": "Оливкова олія", "cost": 3, "effect": "look_top_5", "effect_description": "Перегляньте 5 верхніх карт у колоді інгредієнтів. Візьміть на руку 2 карти, інші 3 поверніть у колоду."} for _ in range(3)],
+    *[{"id": "olive_oil", "type": "special", "name": "Оливкова олія", "cost": 3, "effect": "look_top_5", "effect_description": "Перегляньте 5 верхніх карт у колоді інгредієнтів. Візьміть на руку 2 карти, інші 3 поверніть у колоду."} for _ in range(300)],
     *[{"id": "paprika", "type": "special", "name": "Паприка", "cost": 4, "effect": "refresh_market", "effect_description": "Оновіть ринок. Після цього можете виконати обмін."} for _ in range(3)],
 ]
 
