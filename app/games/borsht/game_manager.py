@@ -16,6 +16,7 @@ class SpecialCardsProps:
     olive_oil_look_count = 5
     olive_oil_select_count = 2
     cinnamon_select_count = 1
+    ginger_select_count = 2
 
 
 class GameSettings:
@@ -587,43 +588,13 @@ class BorshtManager(AbstractGameManager):
             return False, "Sour Cream is used defensively when targeted by another player"
 
         elif effect == 'take_market':  # Ginger
-            # Take 2 cards from market
-            if len(self.market) < 2:
-                return False, "Not enough cards in market"
-
-            if 'market_cards' not in move_data or len(move_data['market_cards']) != 2:
-                return False, "Must select 2 market cards"
-
-            selected_cards = move_data['market_cards']
-            for card_id in selected_cards:
-                for i, card in enumerate(self.market):
-                    if card['id'] == card_id:
-                        # Remove from market and add to player's hand
-                        self.player_hands[player_id].append(card)
-                        self.market.pop(i)
-                        break
-
-            # Replenish market
-            cards_needed = self.game_settings.market_capacity - len(self.market)
-            if cards_needed > 0 and len(self.deck) > 0:
-                new_cards = self.deck[:cards_needed]
-                self.market.extend(new_cards)
-                self.deck = self.deck[cards_needed:]
-
-            await self.connection_manager.broadcast(self.room_id, {
-                'type': 'special_effect',
-                'effect': 'take_market',
-                'player_id': player_id,
-                'cards_taken': selected_cards
-            })
-
-            success = True
+            success, error_message = await self._handle_ginger(self.current_player_id)
 
         elif effect == 'take_discard':  # Cinnamon
             success, error_message = await self._handle_cinnamon(self.current_player_id)
 
         elif effect == 'look_top_5':  # Olive Oil
-            success, error_message = await self._handle_olive_oil()
+            success, error_message = await self._handle_olive_oil(self.current_player_id)
 
         elif effect == 'refresh_market':  # Paprika
             await self._handle_market_refresh()
@@ -839,6 +810,96 @@ class BorshtManager(AbstractGameManager):
             'type': 'cards_selected',
             'cards': selected_cards,
         })
+
+        return True, None
+
+    async def _handle_ginger(self, player_id):
+        """
+        Handle the Ginger special card effect.
+        Allows player to choose up to 3 cards from the market.
+
+        Args:
+            player_id (int): The ID of the player who played the Ginger card
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # Check if market has any cards
+        if len(self.market) == 0:
+            return False, "No cards in market"
+
+        # Determine how many cards player can select (up to 3, limited by market size)
+        max_select = min(self.game_settings.special_cards.ginger_select_count, len(self.market))
+
+        # Prepare request data
+        request_data = {
+            'market': self.market,
+            'select_count': max_select,
+        }
+
+        # Send request to player for card selection
+        response = await self._request_to_player(
+            player_id=player_id,
+            request_type='ginger_selection',
+            request_data=request_data,
+            timeout=self.game_settings.general_player_select_timeout,
+        )
+
+        # Process the response
+        if response.get('timed_out', False) or response.get('random_selection', False):
+            # If timed out or player chose random selection, select random cards
+            selected_indices = random.sample(range(len(self.market)), max_select)
+            selected_cards = [self.market[i] for i in selected_indices]
+
+            # Remove cards from market (in reverse order to avoid index issues)
+            for idx in sorted(selected_indices, reverse=True):
+                self.market.pop(idx)
+
+        else:
+            # Process player's selected cards
+            selected_card_ids = response.get('selected_cards', [])
+
+            # Validate selection count
+            if len(selected_card_ids) > max_select:
+                return False, f"Too many cards selected. Maximum is {max_select}."
+
+            # Find and collect the selected cards
+            selected_cards = []
+            remaining_market = self.market.copy()
+
+            for card_uid in selected_card_ids:
+                card_found = False
+                for i, card in enumerate(remaining_market):
+                    if card['uid'] == card_uid:
+                        selected_cards.append(card)
+                        remaining_market.pop(i)
+                        card_found = True
+                        break
+
+                if not card_found:
+                    # Card not found, invalid selection
+                    return False, "Invalid card selection"
+
+            # Update the market
+            self.market = remaining_market
+
+        # Add selected cards to player's hand
+        self.player_hands[player_id].extend(selected_cards)
+
+        # Broadcast market update to all players
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'market_cards_taken',
+            'market': selected_cards,
+        })
+
+        await self._handle_market_refill()
+
+        # Check hand limit and ask player to discard if needed
+        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if success:
+            self.player_hands[player_id] = updated_hand
+        else:
+            return False, "Failed to handle hand limit after selecting cards"
 
         return True, None
 
