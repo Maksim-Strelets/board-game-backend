@@ -15,6 +15,7 @@ from app.games.borsht import game_cards
 class SpecialCardsProps:
     olive_oil_look_count = 5
     olive_oil_select_count = 2
+    cinnamon_select_count = 1
 
 
 class GameSettings:
@@ -619,25 +620,7 @@ class BorshtManager(AbstractGameManager):
             success = True
 
         elif effect == 'take_discard':  # Cinnamon
-            # Take a card from discard pile
-            if len(self.discard_pile) == 0:
-                # No cards in discard, return card to hand
-                return True, "No cards in discard pile"
-
-            if 'discard_card' not in move_data:
-                return False, "Must select a card from discard pile"
-
-            selected_card_id = move_data['discard_card']
-            for i, card in enumerate(self.discard_pile):
-                if card['id'] == selected_card_id:
-                    # Remove from discard and add to player's hand
-                    self.player_hands[player_id].append(card)
-                    self.discard_pile.pop(i)
-                    success = True
-                    break
-
-            if not success:
-                return False, "Selected card not found in discard pile"
+            success, error_message = await self._handle_cinnamon(self.current_player_id)
 
         elif effect == 'look_top_5':  # Olive Oil
             success, error_message = await self._handle_olive_oil()
@@ -691,7 +674,95 @@ class BorshtManager(AbstractGameManager):
 
         return True, None
 
-    async def _handle_olive_oil(self):
+    async def _handle_cinnamon(self, player_id):
+        """
+        Handle the Cinnamon special card effect.
+        Allows player to choose up to n cards from the discard pile.
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # Check if discard pile has any cards
+        if len(self.discard_pile) == 0:
+            return True, "No cards in discard pile"
+
+        # Determine how many cards player can select (up to 3, limited by discard pile size)
+        max_select = min(self.game_settings.special_cards.cinnamon_select_count, len(self.discard_pile))
+
+        cards_to_select = {card['id']: card for card in self.discard_pile}
+
+        # Prepare request data
+        request_data = {
+            'discard_pile': list(cards_to_select.values()),
+            'select_count': max_select,
+        }
+
+        # Send request to player for card selection
+        response = await self._request_to_player(
+            player_id=player_id,
+            request_type='cinnamon_selection',
+            request_data=request_data,
+            timeout=self.game_settings.general_player_select_timeout,
+        )
+
+        # Process the response
+        if response.get('timed_out', False) or response.get('random_selection', False):
+            # If timed out or player chose random selection, select random cards
+            selected_indices = random.sample(range(len(self.discard_pile)), max_select)
+            selected_cards = [self.discard_pile[i] for i in selected_indices]
+
+            # Remove cards from discard pile (in reverse order to avoid index issues)
+            for idx in sorted(selected_indices, reverse=True):
+                self.discard_pile.pop(idx)
+
+        else:
+            # Process player's selected cards
+            selected_card_ids = response.get('selected_cards', [])
+
+            # Validate selection count
+            if len(selected_card_ids) > max_select:
+                return False, f"Too many cards selected. Maximum is {max_select}."
+
+            # Find and collect the selected cards
+            selected_cards = []
+            remaining_discard_pile = self.discard_pile.copy()
+
+            for card_uid in selected_card_ids:
+                card_found = False
+                for i, card in enumerate(remaining_discard_pile):
+                    if card['uid'] == card_uid:
+                        selected_cards.append(card)
+                        remaining_discard_pile.pop(i)
+                        card_found = True
+                        break
+
+                if not card_found:
+                    # Card not found, invalid selection
+                    return False, "Invalid card selection"
+
+            # Update the discard pile
+            self.discard_pile = remaining_discard_pile
+
+        # Add selected cards to player's hand
+        self.player_hands[player_id].extend(selected_cards)
+
+        # Notify about card selection
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'cards_from_discard_selected',
+            'player_id': player_id,
+            'cards': selected_cards,
+        })
+
+        # Check hand limit and ask player to discard if needed
+        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if success:
+            self.player_hands[player_id] = updated_hand
+        else:
+            return False, "Failed to handle hand limit after selecting cards"
+
+        return True, None
+
+    async def _handle_olive_oil(self, player_id):
         look_count = self.game_settings.special_cards.olive_oil_look_count
         select_count = self.game_settings.special_cards.olive_oil_select_count
 
@@ -709,11 +780,11 @@ class BorshtManager(AbstractGameManager):
         request_data = {
             'select_count': select_count,
             'cards': top_cards,
-            'your_hand': self.player_hands[self.current_player_id],
+            'your_hand': self.player_hands[player_id],
         }
 
         response = await self._request_to_player(
-            player_id=self.current_player_id,
+            player_id=player_id,
             request_type='olive_oil_selection',
             request_data=request_data,
             timeout=self.game_settings.general_player_select_timeout,
@@ -740,7 +811,7 @@ class BorshtManager(AbstractGameManager):
             # Validate selection
             if len(selected_card_ids) != select_count:
                 # Invalid selection, fall back to random
-                return await self._handle_olive_oil()
+                return await self._handle_olive_oil(player_id)
 
             # Find the cards in the hand
             updated_top = top_cards.copy()
@@ -758,13 +829,13 @@ class BorshtManager(AbstractGameManager):
 
                 if not card_found:
                     # Card not found, invalid selection
-                    return await self._handle_olive_oil()
+                    return await self._handle_olive_oil(player_id)
 
         self.deck = updated_top + self.deck[look_count:]
-        self.player_hands[self.current_player_id].extend(selected_cards)
+        self.player_hands[player_id].extend(selected_cards)
 
         # Notify about random select
-        await self.connection_manager.send(self.room_id, self.current_player_id, {
+        await self.connection_manager.send(self.room_id, player_id, {
             'type': 'cards_selected',
             'cards': selected_cards,
         })
