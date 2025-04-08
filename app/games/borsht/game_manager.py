@@ -746,12 +746,13 @@ class BorshtManager(AbstractGameManager):
         """
         # Create a unique request ID
         request_id = f"{request_type}_user{player_id}_{time.time()}_{random.randint(1000, 9999)}"
+        expires_at = time.time() + timeout
 
         # Prepare the message
         request_message = {
             'type': request_type,
             'request_id': request_id,
-            'timeout': timeout,
+            'expires_at': str(int(expires_at)),
             **request_data  # Include all additional data
         }
 
