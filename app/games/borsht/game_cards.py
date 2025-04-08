@@ -36,21 +36,21 @@ base_cards = [
     *[{"id": "honey", "type": "rare", "name": "Мед", "cost": 6, "points": 4} for _ in range(2)],
 
     # extra
-    *[{"id": "salt", "type": "extra", "name": "Сіль", "cost": 1, "points": 2} for _ in range(3)],
-    *[{"id": "garlic", "type": "extra", "name": "Часник", "cost": 5, "points": 4} for _ in range(2)],
-    *[{"id": "vinnik_lard", "type": "extra", "name": "Вінницьке сало", "cost": 6, "points": 0, "effect_description": ""} for _ in range(2)],  # TODO: desc
+    *[{"id": "salt", "type": "extra", "name": "Сіль", "cost": 1, "points": 2} for _ in range(5)],
+    *[{"id": "garlic", "type": "extra", "name": "Часник", "cost": 5, "points": 4} for _ in range(3)],
+    *[{"id": "vinnik_lard", "type": "extra", "name": "Вінницьке сало", "cost": 6, "points": 0, "effect_description": "Замінює будь-який інгредієнт з рецепту"} for _ in range(2)],
     *[{"id": "rye_bread", "type": "extra", "name": "Житній хлібчик", "cost": 6, "points": 5} for _ in range(2)],
-    *[{"id": "bay_leaf", "type": "extra", "name": "Лавровий лист", "cost": 4, "points": 3} for _ in range(2)],
-    *[{"id": "vitamin_bunch", "type": "extra", "name": "Вітамінний пучок", "cost": 2, "points": 2} for _ in range(2)],
+    *[{"id": "bay_leaf", "type": "extra", "name": "Лавровий лист", "cost": 4, "points": 3} for _ in range(4)],
+    *[{"id": "vitamin_bunch", "type": "extra", "name": "Вітамінний пучок", "cost": 2, "points": 2} for _ in range(6)],
 
     # special
-    *[{"id": "chili_pepper", "type": "special", "name": "Перець вогник", "cost": 4, "effect": "steal_or_discard", "effect_description": "Перемістіть у свій борщ або скиньте будь-який інгредієнт з борщу іншого гравця."} for _ in range(6)],
-    *[{"id": "black_pepper", "type": "special", "name": "Чорний перець", "cost": 3, "effect": "discard_or_take", "effect_description": "Скиньте 1 інгредієнт з борщу кожного суперника АБО заеріть по 1 випадковій карті з руки кожного суперника."} for _ in range(4)],
-    *[{"id": "sour_cream", "type": "special", "name": "Сметана", "cost": 4, "effect": "defense", "effect_description": "Скиньте, щоб захиститись від ефектів карт «Чорний перець» або «Перець вогник»."} for _ in range(4)],
+    *[{"id": "chili_pepper", "type": "special", "name": "Перець вогник", "cost": 4, "effect": "steal_or_discard", "effect_description": "Перемістіть у свій борщ або скиньте будь-який інгредієнт з борщу іншого гравця."} for _ in range(8)],
+    *[{"id": "black_pepper", "type": "special", "name": "Чорний перець", "cost": 3, "effect": "discard_or_take", "effect_description": "Скиньте 1 інгредієнт з борщу кожного суперника АБО заеріть по 1 випадковій карті з руки кожного суперника."} for _ in range(3)],
+    *[{"id": "sour_cream", "type": "special", "name": "Сметана", "cost": 4, "effect": "defense", "effect_description": "Скиньте, щоб захиститись від ефектів карт «Чорний перець» або «Перець вогник»."} for _ in range(6)],
     *[{"id": "ginger", "type": "special", "name": "Імбир", "cost": 3, "effect": "take_market", "effect_description": "Візьміть на руку 2 будь-які інгредієнти з ринку і поповніть ринок."} for _ in range(3)],
     *[{"id": "cinnamon", "type": "special", "name": "Кориця", "cost": 5, "effect": "take_discard", "effect_description": "Перегляньте скид і візьміть на руку 1 карту інгредієнта."} for _ in range(3)],
-    *[{"id": "olive_oil", "type": "special", "name": "Оливкова олія", "cost": 3, "effect": "look_top_5", "effect_description": "Перегляньте 5 верхніх карт у колоді інгредієнтів. Візьміть на руку 2 карти, інші 3 поверніть у колоду."} for _ in range(300)],
-    *[{"id": "paprika", "type": "special", "name": "Паприка", "cost": 4, "effect": "refresh_market", "effect_description": "Оновіть ринок. Після цього можете виконати обмін."} for _ in range(3)],
+    *[{"id": "olive_oil", "type": "special", "name": "Оливкова олія", "cost": 3, "effect": "look_top_5", "effect_description": "Перегляньте 5 верхніх карт у колоді інгредієнтів. Візьміть на руку 2 карти, інші 3 поверніть у колоду."} for _ in range(5)],
+    *[{"id": "paprika", "type": "special", "name": "Паприка", "cost": 4, "effect": "refresh_market", "effect_description": "Оновіть ринок. Після цього можете виконати обмін."} for _ in range(10)],
 ]
 
 for card in base_cards:
