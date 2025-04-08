@@ -78,7 +78,7 @@ class BorshtManager(AbstractGameManager):
         # Generate deck, deal cards and set up market
         self._generate_deck()
         await self._deal_initial_cards()
-        self._setup_market()
+        await self._handle_market_refill()
 
         self.is_started = True
         for player in self.players:
@@ -173,12 +173,6 @@ class BorshtManager(AbstractGameManager):
                 'recipe': selected_recipe['name']
             })
 
-    def _setup_market(self):
-        """Set up the initial market with 8 cards."""
-        # Draw the top 8 cards from the deck for the market
-        self.market = self.deck[:self.game_settings.market_capacity]
-        self.deck = self.deck[self.game_settings.market_capacity:]
-
     async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Process a player's move."""
         # Verify it's the player's turn
@@ -224,6 +218,7 @@ class BorshtManager(AbstractGameManager):
         elif action == 'free_market_refresh':
             # Refresh the market
             success, error_message = await self._handle_free_market_refresh()
+            await self.broadcast_game_update()
             return success, error_message, self.is_game_over
 
         else:
@@ -254,11 +249,7 @@ class BorshtManager(AbstractGameManager):
         if success and not self.is_game_over:
             self.next_player()
 
-        for player_id in self.players.keys():
-            await self.connection_manager.send(self.room_id, player_id, {
-                "type": "game_update",
-                "state": jsonable_encoder(self.get_state(player_id))
-            })
+        await self.broadcast_game_update()
 
         return success, error_message, self.is_game_over
 
@@ -971,7 +962,7 @@ class BorshtManager(AbstractGameManager):
         Discard all current market cards and replace them with new cards from the deck.
         """
         # Move selected or all current market cards to discard pile
-        cards = cards_to_discard or self.market
+        cards = cards_to_discard or self.market.copy()
 
         for card in cards:
             self.market.remove(card)
@@ -993,7 +984,7 @@ class BorshtManager(AbstractGameManager):
 
         # Get new cards from deck
         new_cards = self.deck[:cards_to_add]
-        self.market = self.market.extend(new_cards)
+        self.market.extend(new_cards)
         self.deck = self.deck[cards_to_add:]
 
         await self.connection_manager.broadcast(self.room_id, {
@@ -1265,7 +1256,17 @@ class BorshtManager(AbstractGameManager):
         return scores
 
     def _is_market_free_refresh_available(self):
-        return
+        card_counts = {}
+        for card in self.market:
+            card_id = card['id']
+            card_counts[card_id] = card_counts.get(card_id, 0) + 1
+
+            # If any card appears 3 or more times, return True immediately
+            if card_counts[card_id] >= 3:
+                return True
+
+        # No set of 3+ identical cards found
+        return False
 
     async def resend_pending_requests(self, user_id: int) -> None:
         for request in self.pending_requests.get(user_id, dict()):

@@ -114,6 +114,13 @@ class AbstractGameManager(ABC):
         """
         pass
 
+    async def broadcast_game_update(self):
+        for player_id in self.players.keys():
+            await self.connection_manager.send(self.room_id, player_id, {
+                "type": "game_update",
+                "state": jsonable_encoder(self.get_state(player_id))
+            })
+
     @abstractmethod
     def check_game_over(self) -> Tuple[bool, Optional[int]]:
         """
