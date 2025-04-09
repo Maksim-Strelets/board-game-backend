@@ -227,8 +227,20 @@ class BorshtManager(AbstractGameManager):
         else:
             error_message = "Invalid action type"
 
+        # Check hand limit and ask player to discard if needed
+        limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        if limit_success:
+            self.player_hands[player_id] = updated_hand
+
         # Check if player has completed their recipe
         recipe_completed = self._check_recipe_completion(player_id)
+
+        # Check if game is over (all players have had their final turn)
+        if self.game_ending:
+            # If we've gone around to the player who completed their recipe first
+            if player_id == self.first_finisher:
+                self.is_game_over = True
+                self._determine_winner()
 
         # If player completed recipe and it's the first to do so
         if recipe_completed and self.first_finisher is None:
@@ -239,14 +251,6 @@ class BorshtManager(AbstractGameManager):
                 'player_id': player_id,
                 'is_first': True
             })
-
-        # Check if game is over (all players have had their final turn)
-        if self.game_ending:
-            # If we've gone around to the player who completed their recipe first
-            if str(player_id) == str(self.first_finisher) and self.current_player_index == self.players.index(
-                    player_id):
-                self.is_game_over = True
-                self._determine_winner()
 
         # If move was successful and game not over, advance to next player
         if success and not self.is_game_over:
@@ -343,14 +347,6 @@ class BorshtManager(AbstractGameManager):
 
         # Add cards to player's hand
         self.player_hands[player_id].extend(drawn_cards)
-
-        # Check hand limit and ask player to discard if needed
-        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
-        if success:
-            self.player_hands[player_id] = updated_hand
-        else:
-            # This shouldn't happen, but just in case
-            return False, "Failed to handle hand limit"
 
         await self.connection_manager.broadcast(self.room_id, {
             'type': 'cards_drawn',
@@ -594,11 +590,6 @@ class BorshtManager(AbstractGameManager):
             'special_card': card['id'],
             'effect': effect,
         })
-
-        # Check hand limit and ask player to discard if needed
-        limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
-        if limit_success:
-            self.player_hands[player_id] = updated_hand
 
         return True, None
 
@@ -935,14 +926,10 @@ class BorshtManager(AbstractGameManager):
         })
 
         # 3. Check if target player has and wants to use a Sour Cream defense
-        defense_used = await self._check_sour_cream_defense(target_player, card)
+        defense_used = await self._check_sour_cream_defense(target_player, card, [c for _, c in target_card_objects])
 
         # 4. Process the effect if no defense used
         if defense_used:
-            # Remove the Chili Pepper from player's hand and add to discard pile
-            self.player_hands[player_id].pop(card_index)
-            self.discard_pile.append(card)
-
             # 5. Broadcast defense result
             await self.connection_manager.broadcast(self.room_id, {
                 'type': 'defense_successful',
@@ -1046,7 +1033,7 @@ class BorshtManager(AbstractGameManager):
             # Return error response
             return {'error': str(e), 'request_id': request_id}
 
-    async def _check_sour_cream_defense(self, target_player: int, card=None) -> bool:
+    async def _check_sour_cream_defense(self, target_player: int, card: dict, target_cards=None) -> bool:
         """
         Check if target player has and wants to use a Sour Cream defense card.
         """
@@ -1071,6 +1058,7 @@ class BorshtManager(AbstractGameManager):
         request_data = {
             'attacker': self.current_player_id,
             'card': card,
+            'target_cards': target_cards,
             'defense_card': 'sour_cream'
         }
 
@@ -1312,10 +1300,6 @@ class BorshtManager(AbstractGameManager):
             'hand_cards': hand_cards,
             'market_cards': market_cards,
         })
-
-        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
-        if success:
-            self.player_hands[player_id] = updated_hand
 
         await self._handle_market_limit()
 
