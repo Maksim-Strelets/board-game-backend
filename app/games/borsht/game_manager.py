@@ -12,6 +12,24 @@ from app.serializers.game import serialize_players
 from app.games.borsht import game_cards
 
 
+class MoveAction:
+    ADD_INGREDIENT = 'add_ingredient'
+    DRAW_CARDS = 'draw_cards'
+    PLAY_SPECIAL = 'play_special'
+    EXCHANGE_INGREDIENTS = 'exchange_ingredients'
+    FREE_MARKET_REFRESH = 'free_market_refresh'
+    SKIP = 'skip'
+
+
+class GameState:
+    NORMAL_TURN = 'normal_turn'
+    WAITING_FOR_DEFENSE = 'waiting_for_defense'
+    WAITING_FOR_SELECTION = 'waiting_for_selection'
+    WAITING_FOR_DISCARD = 'waiting_for_discard'
+    WAITING_FOR_EXCHANGE = 'waiting_for_exchange'
+    GAME_OVER = 'game_over'
+
+
 class SpecialCardsProps:
     olive_oil_look_count = 5
     olive_oil_select_count = 2
@@ -51,6 +69,7 @@ class BorshtManager(AbstractGameManager):
         self.player_borsht = {}  # Will store ingredients in each player's borsht
         self.player_hands = {}  # Will store cards in each player's hand
         self.moves_count = {player.user_id: 0 for player in room.players}
+        self.turn_state = GameState.NORMAL_TURN
 
         # Game state
         self.market = []  # Cards available in the market
@@ -197,35 +216,47 @@ class BorshtManager(AbstractGameManager):
         action = move_data['action']
         success = False
         error_message = None
+        is_move_continues = False
 
         # Track move count
         self.moves_count[player_id] += 1
 
         # Process different action types
-        if action == 'add_ingredient':
+        if action == MoveAction.ADD_INGREDIENT and self.turn_state == GameState.NORMAL_TURN:
             # Add an ingredient to the player's borsht
             success, error_message = await self._handle_add_ingredient(player_id, move_data)
 
-        elif action == 'draw_cards':
+        elif action == MoveAction.DRAW_CARDS and self.turn_state == GameState.NORMAL_TURN:
             # Draw 2 cards from the deck
             success, error_message = await self._handle_draw_cards(player_id)
 
-        elif action == 'play_special':
+        elif action == MoveAction.PLAY_SPECIAL and self.turn_state == GameState.NORMAL_TURN:
             # Play a special ingredient card for its effect
-            success, error_message = await self._handle_special_ingredient(player_id, move_data)
+            success, error_message, is_move_continues = await self._handle_special_ingredient(player_id, move_data)
 
-        elif action == 'exchange_ingredients':
+        elif action == MoveAction.EXCHANGE_INGREDIENTS and self.turn_state in [GameState.NORMAL_TURN, GameState.WAITING_FOR_EXCHANGE]:
             # Exchange ingredients with the market
             success, error_message = await self._handle_exchange(player_id, move_data)
 
-        elif action == 'free_market_refresh':
+        elif action == MoveAction.SKIP and self.turn_state == GameState.WAITING_FOR_EXCHANGE:
+            success, error_message = True, None
+
+        elif action == MoveAction.FREE_MARKET_REFRESH:
             # Refresh the market
             success, error_message = await self._handle_free_market_refresh()
             await self.broadcast_game_update()
-            return success, error_message, self.is_game_over
+            is_move_continues = True
+
+        elif self.game_state in [GameState.WAITING_FOR_DEFENSE, GameState.WAITING_FOR_DISCARD]:
+            error_message = "Can't make move, while waiting for response"
+            is_move_continues = True
 
         else:
             error_message = "Invalid action type"
+            is_move_continues = True
+
+        if is_move_continues:
+            return success, error_message, self.is_game_over
 
         # Check hand limit and ask player to discard if needed
         limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
@@ -255,6 +286,7 @@ class BorshtManager(AbstractGameManager):
         # If move was successful and game not over, advance to next player
         if success and not self.is_game_over:
             self.next_player()
+            self.turn_state = GameState.NORMAL_TURN
 
         await self.broadcast_game_update()
 
@@ -375,6 +407,8 @@ class BorshtManager(AbstractGameManager):
         if hand_size <= limit:
             return True, current_hand
 
+        self.turn_state = GameState.WAITING_FOR_DISCARD
+
         # Calculate how many cards need to be discarded
         cards_to_discard = hand_size - limit
 
@@ -462,10 +496,10 @@ class BorshtManager(AbstractGameManager):
     def _handle_shkvarka(self, player_id, card):
         pass
 
-    async def _handle_special_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    async def _handle_special_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Handle playing a special ingredient for its effect."""
         if 'card_id' not in move_data:
-            return False, "Card ID required to play special ingredient"
+            return False, "Card ID required to play special ingredient", True
 
         card_uid = move_data['card_id']
 
@@ -477,109 +511,46 @@ class BorshtManager(AbstractGameManager):
                 break
 
         if card_index is None:
-            return False, "Card not in hand"
+            return False, "Card not in hand", True
 
         card = self.player_hands[player_id][card_index]
 
         # Check if it's a special card
         if card['type'] != 'special':
-            return False, "Card is not a special ingredient"
+            return False, "Card is not a special ingredient", True
 
         # Process the special card effect
         effect = card['effect']
         success = False
         error_message = None
+        is_move_continues = False
 
         # Handle different special card effects
         if effect == 'steal_or_discard':  # Chili Pepper
             success, error_message = await self._handle_chili_pepper(player_id, move_data)
 
         elif effect == 'discard_or_take':  # Black Pepper
-            if 'effect_choice' not in move_data:
-                return False, "Effect choice required for Black Pepper"
-
-            effect_choice = move_data['effect_choice']  # 'discard_from_borsht' or 'take_from_hand'
-
-            await self.connection_manager.broadcast(self.room_id, {
-                'type': 'special_effect',
-                'effect': 'discard_or_take',
-                'player_id': player_id,
-                'effect_choice': effect_choice,
-                'affected_players': [p for p in self.players if p != player_id]
-            })
-
-            # Apply effect to all other players
-            for target_player in self.players:
-                if target_player == player_id:
-                    continue  # Skip current player
-
-                # Check if target player has a sour cream defense
-                defense_used = await self._check_sour_cream_defense(target_player, card)
-                if defense_used:
-                    continue  # Skip this player if they defended
-
-                if effect_choice == 'discard_from_borsht': # TODO: card selection
-                    # Discard 1 ingredient from target player's borsht
-                    if len(self.player_borsht[target_player]) > 0:
-                        # For simplicity, we'll discard the first ingredient
-                        # In a real implementation, we'd let the player choose
-                        discard_card = self.player_borsht[target_player].pop(0)
-                        self.discard_pile.append(discard_card)
-
-                elif effect_choice == 'take_from_hand':
-                    # Take 1 card from target player's hand
-                    if len(self.player_hands[target_player]) > 0:
-                        # For simplicity, we'll take the first card
-                        # In a real implementation, we'd take a random card
-                        taken_card = self.player_hands[target_player].pop(0)
-                        self.player_hands[player_id].append(taken_card)
-
-            success = True
+            success, error_message = await self._handle_black_pepper(player_id, move_data)
 
         elif effect == 'defense':  # Sour Cream
             # This is handled passively when targeted by Chili or Black Pepper
-            return False, "Sour Cream is used defensively when targeted by another player"
+            return False, "Sour Cream is used defensively when targeted by another player", True
 
         elif effect == 'take_market':  # Ginger
-            success, error_message = await self._handle_ginger(self.current_player_id)
+            success, error_message = await self._handle_ginger(player_id)
 
         elif effect == 'take_discard':  # Cinnamon
-            success, error_message = await self._handle_cinnamon(self.current_player_id)
+            success, error_message = await self._handle_cinnamon(player_id)
 
         elif effect == 'look_top_5':  # Olive Oil
-            success, error_message = await self._handle_olive_oil(self.current_player_id)
+            success, error_message = await self._handle_olive_oil(player_id)
 
         elif effect == 'refresh_market':  # Paprika
-            await self._handle_market_refresh()
+            success, error_message = await self._handle_paprika()
+            is_move_continues = True
 
-            # Check for 3 identical cards  TODO: add check after each market update
-            duplicate_check = {}
-            has_duplicates = False
-
-            for card in self.market:
-                card_id = card['id']
-                if card_id in duplicate_check:
-                    duplicate_check[card_id] += 1
-                    if duplicate_check[card_id] >= 3:
-                        has_duplicates = True
-                        break
-                else:
-                    duplicate_check[card_id] = 1
-
-            if has_duplicates:
-                # Refresh market again
-                self.discard_pile.extend(self.market)
-                self.market = []
-
-                market_size = min(self.game_settings.market_capacity, len(self.deck))
-                self.market = self.deck[:market_size]
-                self.deck = self.deck[market_size:]
-
-            success = True
-
-        # Remove the card from player's hand and add to discard pile
         if not success:
-            return success, error_message
+            return success, error_message, True
 
         self.player_hands[player_id].pop(card_index)
         self.discard_pile.append(card)
@@ -591,7 +562,7 @@ class BorshtManager(AbstractGameManager):
             'effect': effect,
         })
 
-        return True, None
+        return True, None, is_move_continues
 
     async def _handle_cinnamon(self, player_id):
         """
@@ -607,6 +578,8 @@ class BorshtManager(AbstractGameManager):
 
         # Determine how many cards player can select (up to 3, limited by discard pile size)
         max_select = min(self.game_settings.special_cards.cinnamon_select_count, len(self.discard_pile))
+
+        self.turn_state = GameState.WAITING_FOR_SELECTION
 
         cards_to_select = {card['id']: card for card in self.discard_pile}
 
@@ -681,6 +654,12 @@ class BorshtManager(AbstractGameManager):
 
         return True, None
 
+    async def _handle_paprika(self):
+        self.turn_state = GameState.WAITING_FOR_EXCHANGE
+        await self._handle_market_refresh()
+        await self.broadcast_game_update()
+        return True, None
+
     async def _handle_olive_oil(self, player_id):
         look_count = self.game_settings.special_cards.olive_oil_look_count
         select_count = self.game_settings.special_cards.olive_oil_select_count
@@ -692,6 +671,8 @@ class BorshtManager(AbstractGameManager):
 
         if len(self.deck) < select_count:
             return False, "Not enough cards in deck"
+
+        self.turn_state = GameState.WAITING_FOR_SELECTION
 
         # Look at top n cards (or as many as available)
         top_cards = self.deck[:look_count]
@@ -775,6 +756,8 @@ class BorshtManager(AbstractGameManager):
         # Check if market has any cards
         if len(self.market) == 0:
             return False, "No cards in market"
+
+        self.turn_state = GameState.WAITING_FOR_SELECTION
 
         # Determine how many cards player can select (up to 3, limited by market size)
         max_select = min(self.game_settings.special_cards.ginger_select_count, len(self.market))
@@ -1054,6 +1037,8 @@ class BorshtManager(AbstractGameManager):
         if not has_sour_cream:
             return False  # Player doesn't have a defense card
 
+        self.turn_state = GameState.WAITING_FOR_DEFENSE
+
         # Prepare data for defense request
         request_data = {
             'attacker': self.current_player_id,
@@ -1094,6 +1079,9 @@ class BorshtManager(AbstractGameManager):
         if len(self.market) > self.game_settings.market_capacity:
             # Calculate how many cards need to be discarded
             cards_to_discard = len(self.market) - self.game_settings.market_capacity
+
+            temp_state = self.turn_state
+            self.turn_state = GameState.WAITING_FOR_SELECTION
 
             # Prepare request data
             request_data = {
@@ -1152,6 +1140,8 @@ class BorshtManager(AbstractGameManager):
 
             # Add discarded cards to discard pile
             self.discard_pile.extend(discarded_cards)
+
+            self.turn_state = temp_state
 
             # Notify about discard
             await self.connection_manager.broadcast(self.room_id, {
@@ -1500,6 +1490,7 @@ class BorshtManager(AbstractGameManager):
             market_limit=self.game_settings.market_capacity,
             recipes_revealed=self.recipes_revealed,
             cards_in_deck=len(self.deck),
+            turn_state=self.turn_state if player_id == self.current_player_id else None,
 
             # Market information
             market=self.market.copy(),
