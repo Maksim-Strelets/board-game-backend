@@ -408,6 +408,7 @@ class BorshtManager(AbstractGameManager):
             return True, current_hand
 
         self.turn_state = GameState.WAITING_FOR_DISCARD
+        await self.send_game_update(player_id)
 
         # Calculate how many cards need to be discarded
         cards_to_discard = hand_size - limit
@@ -562,6 +563,8 @@ class BorshtManager(AbstractGameManager):
             'effect': effect,
         })
 
+        await self.broadcast_game_update()
+
         return True, None, is_move_continues
 
     async def _handle_cinnamon(self, player_id):
@@ -580,6 +583,7 @@ class BorshtManager(AbstractGameManager):
         max_select = min(self.game_settings.special_cards.cinnamon_select_count, len(self.discard_pile))
 
         self.turn_state = GameState.WAITING_FOR_SELECTION
+        await self.send_game_update(player_id)
 
         cards_to_select = {card['id']: card for card in self.discard_pile}
 
@@ -657,7 +661,6 @@ class BorshtManager(AbstractGameManager):
     async def _handle_paprika(self):
         self.turn_state = GameState.WAITING_FOR_EXCHANGE
         await self._handle_market_refresh()
-        await self.broadcast_game_update()
         return True, None
 
     async def _handle_olive_oil(self, player_id):
@@ -673,6 +676,7 @@ class BorshtManager(AbstractGameManager):
             return False, "Not enough cards in deck"
 
         self.turn_state = GameState.WAITING_FOR_SELECTION
+        await self.send_game_update(player_id)
 
         # Look at top n cards (or as many as available)
         top_cards = self.deck[:look_count]
@@ -758,6 +762,7 @@ class BorshtManager(AbstractGameManager):
             return False, "No cards in market"
 
         self.turn_state = GameState.WAITING_FOR_SELECTION
+        await self.send_game_update(player_id)
 
         # Determine how many cards player can select (up to 3, limited by market size)
         max_select = min(self.game_settings.special_cards.ginger_select_count, len(self.market))
@@ -831,6 +836,219 @@ class BorshtManager(AbstractGameManager):
             self.player_hands[player_id] = updated_hand
         else:
             return False, "Failed to handle hand limit after selecting cards"
+
+        return True, None
+
+    async def _handle_black_pepper(self, player_id, move_data):
+        """
+        Handle the Black Pepper special card effect.
+        Allows player to either:
+        - Take one random card from each opponent's hand
+        - Force each opponent to discard one selected card from their borsht
+
+        Args:
+            player_id (int): The ID of the player who played the Black Pepper card
+            move_data (Dict[str, Any]): Data containing card_id, action_type, and target_cards
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # 1. Validate player has the card in hand
+        card_uid = move_data.get('card_id')
+        if not card_uid:
+            return False, "Card ID required to play Black Pepper"
+
+        card_index = None
+        card = None
+        for i, c in enumerate(self.player_hands[player_id]):
+            if c['uid'] == card_uid:
+                card_index = i
+                card = c
+                break
+
+        if card_index is None:
+            return False, "Card not in hand"
+
+        if card['id'] != 'black_pepper':
+            return False, "Selected card is not Black Pepper"
+
+        # 2. Validate required parameters
+        action_type = move_data.get('action_type')
+        if not action_type:
+            return False, "Action type required ('steal' or 'discard')"
+
+        if action_type not in ['steal', 'discard']:
+            return False, "Invalid action type. Must be 'steal' or 'discard'"
+
+        # 3. Get valid target players (all opponents except first_finisher)
+        valid_target_players = [pid for pid in self.players if pid != player_id and pid != self.first_finisher]
+
+        if not valid_target_players:
+            return False, "No valid targets available"
+
+        # Broadcast the intended action
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': 'special_effect',
+            'effect': 'black_pepper',
+            'player_id': player_id,
+            'action_type': action_type
+        })
+
+        # Handle different action types
+        if action_type == 'steal':
+            # Take one random card from each opponent's hand
+            return await self._handle_black_pepper_steal(player_id, valid_target_players, card)
+        else:  # 'discard'
+            # Force each opponent to discard one selected card from their borsht
+            target_cards = move_data.get('target_cards', {})
+            return await self._handle_black_pepper_discard(player_id, valid_target_players, target_cards, card)
+
+    async def _handle_black_pepper_steal(self, player_id, target_players, card):
+        """
+        Handle Black Pepper's steal action - take one random card from each opponent's hand.
+
+        Args:
+            player_id (int): The acting player's ID
+            target_players (List[int]): List of valid target player IDs
+            card (Dict): The Black Pepper card object
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # Track defense results for each player
+        defense_results = {}
+        stolen_cards = []
+
+        # Check each target player for defense and process stealing
+        for target_player in target_players:
+            # Skip players with empty hands
+            if len(self.player_hands[target_player]) == 0:
+                continue
+
+            # Check if target player has and wants to use a Sour Cream defense
+            defense_used = await self._check_sour_cream_defense(target_player, card)
+            defense_results[target_player] = defense_used
+
+            # If no defense used, steal a random card
+            if not defense_used:
+                # Select a random card from target's hand
+                import random
+                random_index = random.randint(0, len(self.player_hands[target_player]) - 1)
+                stolen_card = self.player_hands[target_player].pop(random_index)
+                stolen_cards.append(stolen_card)
+
+                # Add the stolen card to the current player's hand
+                self.player_hands[player_id].append(stolen_card)
+
+                # Notify that a card was stolen
+                await self.connection_manager.broadcast(self.room_id, {
+                    'type': 'card_stolen',
+                    'from_player': target_player,
+                    'to_player': player_id
+                })
+
+        # Broadcast defense results for all players who used defense
+        for target_player, defended in defense_results.items():
+            if defended:
+                await self.connection_manager.broadcast(self.room_id, {
+                    'type': 'defense_successful',
+                    'attacker': player_id,
+                    'defender': target_player,
+                    'card': 'black_pepper'
+                })
+
+        # If no cards were stolen (all players defended or had empty hands)
+        if not stolen_cards:
+            return True, "No cards were stolen - all players defended or had empty hands"
+
+        return True, None
+
+    async def _handle_black_pepper_discard(self, player_id, target_players, target_cards, card):
+        """
+        Handle Black Pepper's discard action - force each opponent to discard a selected card from borsht.
+
+        Args:
+            player_id (int): The acting player's ID
+            target_players (List[int]): List of valid target player IDs
+            target_cards (Dict[str, str]): Mapping of player ID to card UIDs to discard
+            card (Dict): The Black Pepper card object
+
+        Returns:
+            Tuple[bool, Optional[str]]: Success status and error message if any
+        """
+        # Validate target_cards includxes all valid targets
+        if not target_cards:
+            return False, "Target cards are required for discard action"
+
+        # Validate all targets have a selected card to discard
+        for target_player in target_players:
+            # Skip players with empty borsht
+            if len(self.player_borsht[target_player]) == 0:
+                continue
+
+            if str(target_player) not in target_cards:
+                return False, f"Missing target card selection for player {target_player}"
+
+            if target_cards[str(target_player)] not in [card['uid'] for card in self.player_borsht[target_player]]:
+                return False, f"Card {target_cards[str(target_player)]} not found in player {target_player}'s borsht"
+
+        # Track defense results for each player
+        defense_results = {}
+        discarded_cards = {}
+
+        # Process each target
+        for target_player in target_players:
+            # Skip players with empty borsht
+            if len(self.player_borsht[target_player]) == 0:
+                continue
+
+            target_card_uid = target_cards.get(str(target_player))
+            if not target_card_uid:
+                continue
+
+            # Find the target card in the player's borsht
+            target_card_index = None
+            target_card = None
+
+            for i, c in enumerate(self.player_borsht[target_player]):
+                if c['uid'] == target_card_uid:
+                    target_card_index = i
+                    target_card = c
+                    break
+
+            # Check if target player has and wants to use a Sour Cream defense
+            defense_used = await self._check_sour_cream_defense(target_player, card, [target_card])
+            defense_results[target_player] = defense_used
+
+            # If no defense used, discard the selected card
+            if not defense_used:
+                # Remove the card from target's borsht
+                discarded_card = self.player_borsht[target_player].pop(target_card_index)
+                discarded_cards[target_player] = discarded_card
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify that a card was discarded
+                await self.connection_manager.broadcast(self.room_id, {
+                    'type': 'borsht_card_discarded',
+                    'player_id': target_player,
+                    'card': discarded_card
+                })
+
+        # Broadcast defense results for all players who used defense
+        for target_player, defended in defense_results.items():
+            if defended:
+                await self.connection_manager.broadcast(self.room_id, {
+                    'type': 'defense_successful',
+                    'attacker': player_id,
+                    'defender': target_player,
+                    'card': 'black_pepper'
+                })
+
+        # If no cards were discarded (all players defended or had empty borsht)
+        if not discarded_cards:
+            return True, "No cards were discarded - all players defended or had empty borsht"
 
         return True, None
 
@@ -1038,7 +1256,7 @@ class BorshtManager(AbstractGameManager):
             return False  # Player doesn't have a defense card
 
         self.turn_state = GameState.WAITING_FOR_DEFENSE
-
+        await self.send_game_update(self.current_player_id)
         # Prepare data for defense request
         request_data = {
             'attacker': self.current_player_id,
@@ -1082,6 +1300,7 @@ class BorshtManager(AbstractGameManager):
 
             temp_state = self.turn_state
             self.turn_state = GameState.WAITING_FOR_SELECTION
+            await self.send_game_update(self.current_player_id)
 
             # Prepare request data
             request_data = {
@@ -1362,7 +1581,7 @@ class BorshtManager(AbstractGameManager):
 
             # Count how many required ingredients the player has
             player_ingredients = [card['id'] for card in self.player_borsht[player_id]]
-            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients or ing == "vinnik_lard"]
             completion_count = len(completed_ingredients)
 
             # Get recipe bonus points based on completion level
@@ -1423,7 +1642,7 @@ class BorshtManager(AbstractGameManager):
 
             # Count how many required ingredients the player has collected
             player_ingredients = [card['id'] for card in self.player_borsht[player_id]]
-            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredients or ing  == 'vinnik_lard']
             completion_count = len(completed_ingredients)
 
             # Calculate recipe bonus based on completion levels
