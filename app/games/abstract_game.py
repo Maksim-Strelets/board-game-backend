@@ -69,36 +69,6 @@ class AbstractGameManager(ABC):
             "stats": jsonable_encoder(game_stats)
         })
 
-        # Update room status to completed
-        update_game_room(self.db, self.room_id, GameRoomUpdate(status=RoomStatus.ENDED))
-
-        # Broadcast room status changed
-        status_message = WebSocketMessage(
-            type=WebSocketMessageType.ROOM_STATUS_CHANGED,
-            user_id=player_id,
-            room_id=self.room_id,
-            user=user_public,
-            content={
-                "status": RoomStatus.ENDED.value
-            }
-        )
-        await self.connection_manager.broadcast(self.room_id, status_message.to_dict())
-
-        # Update player statuses
-        for player in room.players:
-            new_status = PlayerStatus.NOT_READY
-            updated_player = update_player_status(self.db, self.room_id, player.user_id, new_status)
-            status_change_message = WebSocketMessage(
-                type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
-                user_id=player.user_id,
-                room_id=self.room_id,
-                user=user_public,
-                content={
-                    "player": jsonable_encoder(updated_player),
-                    "status": new_status.value
-                }
-            )
-            await self.connection_manager.broadcast(self.room_id, status_change_message.to_dict())
 
     @abstractmethod
     async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
@@ -139,8 +109,15 @@ class AbstractGameManager(ABC):
         """Resend pending requests to user."""
         pass
 
-    @abstractmethod
     def get_state(self, user_id) -> Dict[str, Any]:
+        """Get current game state for sending to user."""
+        if not self.is_game_over:
+            return self._get_state(user_id)
+        else:
+            return self.get_game_stats()
+
+    @abstractmethod
+    def _get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to user."""
         pass
 

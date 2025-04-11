@@ -105,7 +105,7 @@ class TicTacToeManager(AbstractGameManager):
         # Game not over
         return False, None
 
-    def get_state(self, user_id) -> Dict[str, Any]:
+    def _get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to clients."""
         return {
             "game": "tic_tac_toe",

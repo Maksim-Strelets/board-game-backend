@@ -248,6 +248,9 @@ async def process_websocket_messages(
                     if new_status == RoomStatus.IN_PROGRESS.value:
                         await start_game(db, room_id)
 
+                    if new_status == RoomStatus.ENDED.value:
+                        await end_game(db, room_id)
+
             elif message_type == "get_game_state":
                 # Check if game is active
                 if room_id in active_games:
@@ -340,3 +343,25 @@ async def start_game(db, room_id):
             "type": GameWebSocketMessageType.GAME_ERROR,
             "message": f"Game {room.game_id} not supported"
         })
+
+
+async def end_game(db, room_id):
+    # Update room status to completed
+    room = update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.ENDED))
+    del active_games[room_id]
+
+    # Update player statuses
+    for player in room.players:
+        new_status = PlayerStatus.NOT_READY
+        updated_player = update_player_status(db, room_id, player.user_id, new_status)
+        status_change_message = WebSocketMessage(
+            type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
+            user_id=player.user_id,
+            room_id=room_id,
+            user=serialize_user(updated_player.user),
+            content={
+                "player": jsonable_encoder(updated_player),
+                "status": new_status.value
+            }
+        )
+        await connection_manager.broadcast(room_id, status_change_message.to_dict())

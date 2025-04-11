@@ -7,7 +7,7 @@ import time
 from fastapi.encoders import jsonable_encoder
 
 from app.games.abstract_game import AbstractGameManager
-from app.serializers.game import serialize_players
+from app.serializers.game import serialize_player
 
 from app.games.borsht import game_cards
 
@@ -19,6 +19,24 @@ class MoveAction:
     EXCHANGE_INGREDIENTS = 'exchange_ingredients'
     FREE_MARKET_REFRESH = 'free_market_refresh'
     SKIP = 'skip'
+
+
+class WebSocketGameMessage:
+    NEW_TURN = 'new_turn'
+    RECIPE_COMPLETED = 'recipe_completed'
+    INGREDIENT_ADDED = 'ingredient_added'
+    CARDS_DRAWN = 'cards_drawn'
+    SPECIAL_PLAYED = 'special_played'
+    CARDS_FROM_DISCARD_SELECTED = 'cards_from_discard_selected'
+    MARKET_CARDS_TAKEN = 'market_cards_taken'
+    SPECIAL_EFFECT = 'special_effect'
+    CARD_STOLEN = 'card_stolen'
+    DEFENSE_SUCCESSFUL = 'defense_successful'
+    BORSHT_CARD_DISCARDED = 'borsht_card_discarded'
+    CHILI_PEPPER_EFFECT_APPLIED = 'chili_pepper_effect_applied'
+    CARDS_FROM_MARKET_DISCARDED = 'cards_from_market_discarded'
+    MARKET_CARDS_ADDED = 'market_cards_added'
+    INGREDIENTS_EXCHANGED = 'ingredients_exchanged'
 
 
 class GameState:
@@ -39,7 +57,7 @@ class SpecialCardsProps:
 
 
 class GameSettings:
-    general_player_select_timeout = 30
+    general_player_select_timeout = 300
     borscht_recipes_select_count = 3
     market_capacity = 8
     player_hand_limit = 8
@@ -109,12 +127,16 @@ class BorshtManager(AbstractGameManager):
                 "state": jsonable_encoder(self.get_state(player)),
             })
 
+        await self.connection_manager.broadcast(self.room_id, {
+            'type': WebSocketGameMessage.NEW_TURN,
+            'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
+        })
+
     def _generate_deck(self):
         """Generate the ingredient deck based on game rules."""
         # This would typically come from a database, but for this example,
         # we'll define it directly in code based on the game rulebook
-        self.deck = game_cards.base_cards.copy()  # TODO: check copying
-
+        self.deck = game_cards.base_cards.copy()
         self.recipes = game_cards.recipes.copy()
 
         # Shuffle the deck (we would use a proper shuffle in production)
@@ -209,6 +231,14 @@ class BorshtManager(AbstractGameManager):
         if self.first_finisher is not None and move_data.get('target_player') == self.first_finisher:
             return False, "Cannot target a player who has completed their recipe", self.is_game_over
 
+        # Check if game is over (all players have had their final turn)
+        if self.game_ending:
+            # If we've gone around to the player who completed their recipe first
+            if player_id == self.first_finisher:
+                self.is_game_over = True
+                self._determine_winner()
+            return True, None, self.is_game_over
+
         # Validate move data
         if 'action' not in move_data:
             return False, "Invalid move data, action required", self.is_game_over
@@ -266,20 +296,13 @@ class BorshtManager(AbstractGameManager):
         # Check if player has completed their recipe
         recipe_completed = self._check_recipe_completion(player_id)
 
-        # Check if game is over (all players have had their final turn)
-        if self.game_ending:
-            # If we've gone around to the player who completed their recipe first
-            if player_id == self.first_finisher:
-                self.is_game_over = True
-                self._determine_winner()
-
         # If player completed recipe and it's the first to do so
         if recipe_completed and self.first_finisher is None:
             self.first_finisher = player_id
             self.game_ending = True
             await self.connection_manager.broadcast(self.room_id, {
-                'type': 'recipe_completed',
-                'player_id': player_id,
+                'type': WebSocketGameMessage.RECIPE_COMPLETED,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
                 'is_first': True
             })
 
@@ -287,6 +310,10 @@ class BorshtManager(AbstractGameManager):
         if success and not self.is_game_over:
             self.next_player()
             self.turn_state = GameState.NORMAL_TURN
+            await self.connection_manager.broadcast(self.room_id, {
+                'type': WebSocketGameMessage.NEW_TURN,
+                'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
+            })
 
         await self.broadcast_game_update()
 
@@ -338,8 +365,8 @@ class BorshtManager(AbstractGameManager):
         self.player_hands[player_id].pop(card_index)
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'ingredient_added',
-            'player_id': player_id,
+            'type': WebSocketGameMessage.INGREDIENT_ADDED,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'card': card,
         })
 
@@ -381,8 +408,8 @@ class BorshtManager(AbstractGameManager):
         self.player_hands[player_id].extend(drawn_cards)
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'cards_drawn',
-            'player_id': player_id,
+            'type': WebSocketGameMessage.CARDS_DRAWN,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'count': len(drawn_cards)
         })
 
@@ -450,7 +477,7 @@ class BorshtManager(AbstractGameManager):
             # Notify about random discard
             await self.connection_manager.send(self.room_id, player_id, {
                 'type': 'cards_discarded',
-                'player_id': player_id,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
                 'count': cards_to_discard
             })
 
@@ -488,7 +515,7 @@ class BorshtManager(AbstractGameManager):
             # Notify about discard
             await self.connection_manager.send(self.room_id, player_id, {
                 'type': 'cards_discarded',
-                'player_id': player_id,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
                 'cards': [card['id'] for card in discarded_cards]
             })
 
@@ -557,8 +584,8 @@ class BorshtManager(AbstractGameManager):
         self.discard_pile.append(card)
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'special_played',
-            'player_id': player_id,
+            'type': WebSocketGameMessage.SPECIAL_PLAYED,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'special_card': card['id'],
             'effect': effect,
         })
@@ -644,8 +671,8 @@ class BorshtManager(AbstractGameManager):
 
         # Notify about card selection
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'cards_from_discard_selected',
-            'player_id': player_id,
+            'type': WebSocketGameMessage.CARDS_FROM_DISCARD_SELECTED,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'cards': selected_cards,
         })
 
@@ -824,7 +851,7 @@ class BorshtManager(AbstractGameManager):
 
         # Broadcast market update to all players
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'market_cards_taken',
+            'type': WebSocketGameMessage.MARKET_CARDS_TAKEN,
             'market': selected_cards,
         })
 
@@ -888,9 +915,9 @@ class BorshtManager(AbstractGameManager):
 
         # Broadcast the intended action
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'special_effect',
+            'type': WebSocketGameMessage.SPECIAL_EFFECT,
             'effect': 'black_pepper',
-            'player_id': player_id,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'action_type': action_type
         })
 
@@ -942,7 +969,7 @@ class BorshtManager(AbstractGameManager):
 
                 # Notify that a card was stolen
                 await self.connection_manager.broadcast(self.room_id, {
-                    'type': 'card_stolen',
+                    'type': WebSocketGameMessage.CARD_STOLEN,
                     'from_player': target_player,
                     'to_player': player_id
                 })
@@ -951,10 +978,10 @@ class BorshtManager(AbstractGameManager):
         for target_player, defended in defense_results.items():
             if defended:
                 await self.connection_manager.broadcast(self.room_id, {
-                    'type': 'defense_successful',
+                    'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                     'attacker': player_id,
                     'defender': target_player,
-                    'card': 'black_pepper'
+                    'card': card,
                 })
 
         # If no cards were stolen (all players defended or had empty hands)
@@ -1031,8 +1058,8 @@ class BorshtManager(AbstractGameManager):
 
                 # Notify that a card was discarded
                 await self.connection_manager.broadcast(self.room_id, {
-                    'type': 'borsht_card_discarded',
-                    'player_id': target_player,
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'player': jsonable_encoder(serialize_player(self.players[target_player])),
                     'card': discarded_card
                 })
 
@@ -1040,10 +1067,10 @@ class BorshtManager(AbstractGameManager):
         for target_player, defended in defense_results.items():
             if defended:
                 await self.connection_manager.broadcast(self.room_id, {
-                    'type': 'defense_successful',
+                    'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                     'attacker': player_id,
                     'defender': target_player,
-                    'card': 'black_pepper'
+                    'card': card,
                 })
 
         # If no cards were discarded (all players defended or had empty borsht)
@@ -1118,9 +1145,9 @@ class BorshtManager(AbstractGameManager):
 
         # Broadcast the intended action
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'special_effect',
+            'type': WebSocketGameMessage.SPECIAL_EFFECT,
             'effect': 'chili_pepper',
-            'player_id': player_id,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'target_player': target_player,
             'target_cards': target_cards,
             'action_type': action_type
@@ -1133,10 +1160,10 @@ class BorshtManager(AbstractGameManager):
         if defense_used:
             # 5. Broadcast defense result
             await self.connection_manager.broadcast(self.room_id, {
-                'type': 'defense_successful',
+                'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                 'attacker': player_id,
                 'defender': target_player,
-                'card': 'chili_pepper'
+                'card': card,
             })
 
             return True, "Target defended with Sour Cream"
@@ -1165,8 +1192,8 @@ class BorshtManager(AbstractGameManager):
 
         # 5. Broadcast the result
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'chili_pepper_effect_applied',
-            'player_id': player_id,
+            'type': WebSocketGameMessage.CHILI_PEPPER_EFFECT_APPLIED,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'target_player': target_player,
             'target_cards': target_cards,
             'action_type': action_type
@@ -1217,7 +1244,7 @@ class BorshtManager(AbstractGameManager):
             # Wait for response with timeout
             try:
                 # This will wait until the future is resolved or timeout occurs
-                response = await asyncio.wait_for(response_future, timeout)  # TODO: Time delay ?
+                response = await asyncio.wait_for(response_future, timeout)
                 return response
             except asyncio.TimeoutError:
                 # Handle timeout - return default response
@@ -1283,10 +1310,10 @@ class BorshtManager(AbstractGameManager):
 
             # Notify all players about the defense
             await self.connection_manager.broadcast(self.room_id, {
-                'type': 'card_defended',
+                'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                 'defender': target_player,
                 'attacker': self.current_player_id,
-                'defense_card': 'sour_cream'
+                'card': card,
             })
 
         return defense_used
@@ -1364,7 +1391,7 @@ class BorshtManager(AbstractGameManager):
 
             # Notify about discard
             await self.connection_manager.broadcast(self.room_id, {
-                'type': 'cards_from_market_discarded',
+                'type': WebSocketGameMessage.CARDS_FROM_MARKET_DISCARDED,
                 'cards': [card['id'] for card in discarded_cards]
             })
             self.market = updated_market
@@ -1381,7 +1408,7 @@ class BorshtManager(AbstractGameManager):
         self.discard_pile.extend(cards)
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'market_cards_discarded',
+            'type': WebSocketGameMessage.CARDS_FROM_MARKET_DISCARDED,
             'cards': cards,
         })
 
@@ -1400,7 +1427,7 @@ class BorshtManager(AbstractGameManager):
         self.deck = self.deck[cards_to_add:]
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'market_cards_added',
+            'type': WebSocketGameMessage.MARKET_CARDS_ADDED,
             'cards': new_cards,
         })
 
@@ -1504,10 +1531,10 @@ class BorshtManager(AbstractGameManager):
             self.deck = self.deck[cards_needed:]
 
         await self.connection_manager.broadcast(self.room_id, {
-            'type': 'ingredients_exchanged',
-            'player_id': player_id,
-            'hand_cards': hand_cards,
-            'market_cards': market_cards,
+            'type': WebSocketGameMessage.INGREDIENTS_EXCHANGED,
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
+            'hand_cards': hand_card_objects,
+            'market_cards': market_card_objects,
         })
 
         await self._handle_market_limit()
@@ -1680,7 +1707,7 @@ class BorshtManager(AbstractGameManager):
         for request in self.pending_requests.get(user_id, dict()):
             await self.connection_manager.send(self.room_id, user_id, self.sent_requests[request])
 
-    def get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
+    def _get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
         """
         Get current game state for sending to player.
 
@@ -1705,7 +1732,7 @@ class BorshtManager(AbstractGameManager):
             current_player=self.current_player_id,
             is_game_over=self.is_game_over,
             game_ending=self.game_ending,
-            first_finisher=self.first_finisher,
+            first_finisher=jsonable_encoder(serialize_player(self.players[self.first_finisher])) if self.first_finisher else None,
             market_limit=self.game_settings.market_capacity,
             recipes_revealed=self.recipes_revealed,
             cards_in_deck=len(self.deck),
