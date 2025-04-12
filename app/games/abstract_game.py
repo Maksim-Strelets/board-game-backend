@@ -65,7 +65,7 @@ class AbstractGameManager(ABC):
 
         # Broadcast game ended with stats
         await self.connection_manager.broadcast(self.room_id, {
-            "type": "game_ended",
+            "type": WebSocketMessageType.GAME_ENDED,
             "stats": jsonable_encoder(game_stats)
         })
 
@@ -109,15 +109,8 @@ class AbstractGameManager(ABC):
         """Resend pending requests to user."""
         pass
 
-    def get_state(self, user_id) -> Dict[str, Any]:
-        """Get current game state for sending to user."""
-        if not self.is_game_over:
-            return self._get_state(user_id)
-        else:
-            return self.get_game_stats()
-
     @abstractmethod
-    def _get_state(self, user_id) -> Dict[str, Any]:
+    def get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to user."""
         pass
 

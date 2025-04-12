@@ -20,6 +20,7 @@ class TicTacToeManager(AbstractGameManager):
 
         # Symbols for players (X always goes first)
         self.symbols = {room.players[0].user_id: "X", room.players[1].user_id: "O"}
+        self.board = []
 
         # Add stats tracking
         self.start_time = time.time()
@@ -105,7 +106,10 @@ class TicTacToeManager(AbstractGameManager):
         # Game not over
         return False, None
 
-    def _get_state(self, user_id) -> Dict[str, Any]:
+    async def resend_pending_requests(self, user_id):
+        pass
+
+    def get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to clients."""
         return {
             "game": "tic_tac_toe",

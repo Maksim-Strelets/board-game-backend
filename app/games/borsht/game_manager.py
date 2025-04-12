@@ -231,14 +231,6 @@ class BorshtManager(AbstractGameManager):
         if self.first_finisher is not None and move_data.get('target_player') == self.first_finisher:
             return False, "Cannot target a player who has completed their recipe", self.is_game_over
 
-        # Check if game is over (all players have had their final turn)
-        if self.game_ending:
-            # If we've gone around to the player who completed their recipe first
-            if player_id == self.first_finisher:
-                self.is_game_over = True
-                self._determine_winner()
-            return True, None, self.is_game_over
-
         # Validate move data
         if 'action' not in move_data:
             return False, "Invalid move data, action required", self.is_game_over
@@ -310,6 +302,13 @@ class BorshtManager(AbstractGameManager):
         if success and not self.is_game_over:
             self.next_player()
             self.turn_state = GameState.NORMAL_TURN
+
+            # Check if game is over (all players have had their final turn)
+            if self.game_ending and self.current_player_id == self.first_finisher:
+                # If we've gone around to the player who completed their recipe first
+                self.is_game_over = True
+                self._determine_winner()
+
             await self.connection_manager.broadcast(self.room_id, {
                 'type': WebSocketGameMessage.NEW_TURN,
                 'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
@@ -676,13 +675,6 @@ class BorshtManager(AbstractGameManager):
             'cards': selected_cards,
         })
 
-        # Check hand limit and ask player to discard if needed
-        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
-        if success:
-            self.player_hands[player_id] = updated_hand
-        else:
-            return False, "Failed to handle hand limit after selecting cards"
-
         return True, None
 
     async def _handle_paprika(self):
@@ -856,13 +848,6 @@ class BorshtManager(AbstractGameManager):
         })
 
         await self._handle_market_refill()
-
-        # Check hand limit and ask player to discard if needed
-        success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
-        if success:
-            self.player_hands[player_id] = updated_hand
-        else:
-            return False, "Failed to handle hand limit after selecting cards"
 
         return True, None
 
@@ -1707,7 +1692,7 @@ class BorshtManager(AbstractGameManager):
         for request in self.pending_requests.get(user_id, dict()):
             await self.connection_manager.send(self.room_id, user_id, self.sent_requests[request])
 
-    def _get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
+    def get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
         """
         Get current game state for sending to player.
 
@@ -1769,17 +1754,6 @@ class BorshtManager(AbstractGameManager):
 
             # Recipe is only visible if recipes are revealed
             if self.recipes_revealed:
-                state["players"][pid]["recipe"] = self.player_recipes[pid].copy()
-
-        # If game is over, include final scores
-        if self.is_game_over:
-            state["winner"] = self.winner
-            state["scores"] = self.calculate_scores()
-
-            # Once game is over, reveal all player recipes
-            for pid in self.players:
-                if pid not in state["players"]:
-                    state["players"][pid] = {}
                 state["players"][pid]["recipe"] = self.player_recipes[pid].copy()
 
         # Include active effects
@@ -1844,6 +1818,7 @@ class BorshtManager(AbstractGameManager):
 
             # Compile player statistics
             player_stats[player_id] = {
+                "player": jsonable_encoder(serialize_player(self.players[player_id])),
                 "recipe_name": recipe['name'],
                 "recipe_completion": completion_percentage,
                 "completed_ingredients": len(completed_ingredients),
@@ -1864,11 +1839,11 @@ class BorshtManager(AbstractGameManager):
         game_stats = {
             "duration_seconds": game_duration,
             "total_rounds": sum(self.moves_count.values()),
-            "winner": winner_id,
+            "winner": jsonable_encoder(serialize_player(self.players[self.winner])),
             "winner_score": scores[winner_id],
             "scores": scores,
             "player_stats": player_stats,
-            "first_finisher": self.first_finisher,
+            "first_finisher": jsonable_encoder(serialize_player(self.players[self.first_finisher])),
             "cards_remaining_in_deck": len(self.deck),
             "cards_in_discard": len(self.discard_pile),
             "active_shkvarkas": len(self.active_shkvarkas),

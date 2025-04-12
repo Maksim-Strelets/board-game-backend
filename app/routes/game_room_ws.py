@@ -260,6 +260,11 @@ async def process_websocket_messages(
                         "state": jsonable_encoder(game_state),
                     })
                     await active_games[room_id].resend_pending_requests(user_id)
+                    if active_games[room_id].is_game_over:
+                        await websocket.send_json({
+                            "type": WebSocketMessageType.GAME_ENDED,
+                            "state": jsonable_encoder(active_games[room_id].get_game_stats()),
+                        })
                 elif room.status.name == RoomStatus.IN_PROGRESS.name:
                     await start_game(db, room_id)
                 else:
@@ -300,6 +305,13 @@ async def process_websocket_messages(
                 user=user_public
             )
             await connection_manager.broadcast(room_id, leave_message.to_dict())
+
+        if (
+                room_id in active_games and
+                active_games[room_id].is_game_over and
+                not connection_manager.active_connections.get(room_id, {})
+        ):
+            await end_game(db, room_id)
 
 
 async def start_game(db, room_id):
