@@ -109,6 +109,9 @@ class TicTacToeManager(AbstractGameManager):
     async def resend_pending_requests(self, user_id):
         pass
 
+    async def resend_game_messages(self, user_id):
+        pass
+
     def get_state(self, user_id) -> Dict[str, Any]:
         """Get current game state for sending to clients."""
         return {

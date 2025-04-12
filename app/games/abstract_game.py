@@ -19,6 +19,7 @@ class AbstractGameManager(ABC):
         self.db = db
         self.pending_requests = {}
         self.sent_requests = {}
+        self.game_messages = []
         self.connection_manager = connection_manager
         self.room_id = room.id
         self.players = {player.user_id: player for player in room.players}
@@ -107,6 +108,11 @@ class AbstractGameManager(ABC):
     @abstractmethod
     async def resend_pending_requests(self, user_id: int) -> None:
         """Resend pending requests to user."""
+        pass
+
+    @abstractmethod
+    async def resend_game_messages(self, user_id: int) -> None:
+        """Resend game messages to user."""
         pass
 
     @abstractmethod

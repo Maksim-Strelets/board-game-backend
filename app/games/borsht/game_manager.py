@@ -127,10 +127,12 @@ class BorshtManager(AbstractGameManager):
                 "state": jsonable_encoder(self.get_state(player)),
             })
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.NEW_TURN,
             'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
     def _generate_deck(self):
         """Generate the ingredient deck based on game rules."""
@@ -292,11 +294,13 @@ class BorshtManager(AbstractGameManager):
         if recipe_completed and self.first_finisher is None:
             self.first_finisher = player_id
             self.game_ending = True
-            await self.connection_manager.broadcast(self.room_id, {
+            message =  {
                 'type': WebSocketGameMessage.RECIPE_COMPLETED,
                 'player': jsonable_encoder(serialize_player(self.players[player_id])),
                 'is_first': True
-            })
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
         # If move was successful and game not over, advance to next player
         if success and not self.is_game_over:
@@ -309,10 +313,12 @@ class BorshtManager(AbstractGameManager):
                 self.is_game_over = True
                 self._determine_winner()
 
-            await self.connection_manager.broadcast(self.room_id, {
+            message = {
                 'type': WebSocketGameMessage.NEW_TURN,
                 'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
-            })
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
         await self.broadcast_game_update()
 
@@ -363,11 +369,13 @@ class BorshtManager(AbstractGameManager):
         # Remove from hand
         self.player_hands[player_id].pop(card_index)
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.INGREDIENT_ADDED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'card': card,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         return True, None
 
@@ -406,11 +414,13 @@ class BorshtManager(AbstractGameManager):
         # Add cards to player's hand
         self.player_hands[player_id].extend(drawn_cards)
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.CARDS_DRAWN,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'count': len(drawn_cards)
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         return True, None
 
@@ -582,12 +592,14 @@ class BorshtManager(AbstractGameManager):
         self.player_hands[player_id].pop(card_index)
         self.discard_pile.append(card)
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.SPECIAL_PLAYED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'special_card': card['id'],
             'effect': effect,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         await self.broadcast_game_update()
 
@@ -669,11 +681,13 @@ class BorshtManager(AbstractGameManager):
         self.player_hands[player_id].extend(selected_cards)
 
         # Notify about card selection
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.CARDS_FROM_DISCARD_SELECTED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'cards': selected_cards,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         return True, None
 
@@ -842,10 +856,12 @@ class BorshtManager(AbstractGameManager):
         self.player_hands[player_id].extend(selected_cards)
 
         # Broadcast market update to all players
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.MARKET_CARDS_TAKEN,
             'market': selected_cards,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         await self._handle_market_refill()
 
@@ -899,12 +915,14 @@ class BorshtManager(AbstractGameManager):
             return False, "No valid targets available"
 
         # Broadcast the intended action
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.SPECIAL_EFFECT,
             'effect': 'black_pepper',
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'action_type': action_type
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         # Handle different action types
         if action_type == 'steal':
@@ -953,21 +971,25 @@ class BorshtManager(AbstractGameManager):
                 self.player_hands[player_id].append(stolen_card)
 
                 # Notify that a card was stolen
-                await self.connection_manager.broadcast(self.room_id, {
+                message = {
                     'type': WebSocketGameMessage.CARD_STOLEN,
                     'from_player': target_player,
                     'to_player': player_id
-                })
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
         # Broadcast defense results for all players who used defense
         for target_player, defended in defense_results.items():
             if defended:
-                await self.connection_manager.broadcast(self.room_id, {
+                message = {
                     'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                     'attacker': player_id,
                     'defender': target_player,
                     'card': card,
-                })
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
         # If no cards were stolen (all players defended or had empty hands)
         if not stolen_cards:
@@ -1042,21 +1064,25 @@ class BorshtManager(AbstractGameManager):
                 self.discard_pile.append(discarded_card)
 
                 # Notify that a card was discarded
-                await self.connection_manager.broadcast(self.room_id, {
+                message = {
                     'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
                     'player': jsonable_encoder(serialize_player(self.players[target_player])),
                     'card': discarded_card
-                })
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
         # Broadcast defense results for all players who used defense
         for target_player, defended in defense_results.items():
             if defended:
-                await self.connection_manager.broadcast(self.room_id, {
+                message = {
                     'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                     'attacker': player_id,
                     'defender': target_player,
                     'card': card,
-                })
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
         # If no cards were discarded (all players defended or had empty borsht)
         if not discarded_cards:
@@ -1129,14 +1155,16 @@ class BorshtManager(AbstractGameManager):
                 return False, f"Card {card_uid} not found in target player's borsht"
 
         # Broadcast the intended action
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.SPECIAL_EFFECT,
             'effect': 'chili_pepper',
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'target_player': target_player,
             'target_cards': target_cards,
             'action_type': action_type
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         # 3. Check if target player has and wants to use a Sour Cream defense
         defense_used = await self._check_sour_cream_defense(target_player, card, [c for _, c in target_card_objects])
@@ -1144,12 +1172,14 @@ class BorshtManager(AbstractGameManager):
         # 4. Process the effect if no defense used
         if defense_used:
             # 5. Broadcast defense result
-            await self.connection_manager.broadcast(self.room_id, {
+            message = {
                 'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                 'attacker': player_id,
                 'defender': target_player,
                 'card': card,
-            })
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
             return True, "Target defended with Sour Cream"
 
@@ -1176,13 +1206,15 @@ class BorshtManager(AbstractGameManager):
                 self.discard_pile.append(target_card)
 
         # 5. Broadcast the result
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.CHILI_PEPPER_EFFECT_APPLIED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'target_player': target_player,
             'target_cards': target_cards,
             'action_type': action_type
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         return True, None
 
@@ -1294,12 +1326,14 @@ class BorshtManager(AbstractGameManager):
             self.discard_pile.append(defense_card)
 
             # Notify all players about the defense
-            await self.connection_manager.broadcast(self.room_id, {
+            message = {
                 'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
                 'defender': target_player,
                 'attacker': self.current_player_id,
                 'card': card,
-            })
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
         return defense_used
 
@@ -1375,10 +1409,12 @@ class BorshtManager(AbstractGameManager):
             self.turn_state = temp_state
 
             # Notify about discard
-            await self.connection_manager.broadcast(self.room_id, {
+            message = {
                 'type': WebSocketGameMessage.CARDS_FROM_MARKET_DISCARDED,
                 'cards': [card['id'] for card in discarded_cards]
-            })
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
             self.market = updated_market
 
     async def _handle_market_refresh(self, cards_to_discard=None) -> None:
@@ -1392,10 +1428,12 @@ class BorshtManager(AbstractGameManager):
             self.market.remove(card)
         self.discard_pile.extend(cards)
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.CARDS_FROM_MARKET_DISCARDED,
             'cards': cards,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         await self._handle_market_refill()
 
@@ -1411,10 +1449,12 @@ class BorshtManager(AbstractGameManager):
         self.market.extend(new_cards)
         self.deck = self.deck[cards_to_add:]
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.MARKET_CARDS_ADDED,
             'cards': new_cards,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_put_cards_to_market(self, cards):
         self.market.extend(cards)
@@ -1515,12 +1555,14 @@ class BorshtManager(AbstractGameManager):
             self.market.extend(new_cards)
             self.deck = self.deck[cards_needed:]
 
-        await self.connection_manager.broadcast(self.room_id, {
+        message = {
             'type': WebSocketGameMessage.INGREDIENTS_EXCHANGED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'hand_cards': hand_card_objects,
             'market_cards': market_card_objects,
-        })
+        }
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
         await self._handle_market_limit()
 
@@ -1691,6 +1733,10 @@ class BorshtManager(AbstractGameManager):
     async def resend_pending_requests(self, user_id: int) -> None:
         for request in self.pending_requests.get(user_id, dict()):
             await self.connection_manager.send(self.room_id, user_id, self.sent_requests[request])
+
+    async def resend_game_messages(self, user_id: int) -> None:
+        for message in self.game_messages:
+            await self.connection_manager.send(self.room_id, user_id, message)
 
     def get_state(self, player_id: int) -> Optional[Dict[str, Any]]:
         """
