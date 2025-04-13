@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
 
+from app.routes.game_rooms_ws import broadcast_room_list_update
 from app.database import models
 from app.database.base import get_db
 from app.crud.game_room import (
@@ -32,11 +33,13 @@ router = APIRouter(
 
 
 @router.post("/", response_model=GameRoom)
-def create_game_room_endpoint(game_id: int, game_room: GameRoomCreate, db: Session = Depends(get_db)):
+async def create_game_room_endpoint(game_id: int, game_room: GameRoomCreate, db: Session = Depends(get_db)):
     # Override the game_id from the path
     game_room.game_id = game_id
     try:
-        return create_game_room(db=db, game_room=game_room)
+        room = create_game_room(db=db, game_room=game_room)
+        await broadcast_room_list_update(db, game_id)
+        return room
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -107,7 +110,7 @@ def read_game_room(game_id: int, room_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{room_id}", response_model=GameRoom)
-def update_game_room_endpoint(game_id: int, room_id: int, game_room: GameRoomUpdate, db: Session = Depends(get_db)):
+async def update_game_room_endpoint(game_id: int, room_id: int, game_room: GameRoomUpdate, db: Session = Depends(get_db)):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -119,11 +122,12 @@ def update_game_room_endpoint(game_id: int, room_id: int, game_room: GameRoomUpd
     updated_room = update_game_room(db=db, room_id=room_id, game_room=game_room)
     if updated_room is None:
         raise HTTPException(status_code=404, detail="Game room not found")
+    await broadcast_room_list_update(db, game_id)
     return updated_room
 
 
 @router.delete("/{room_id}", response_model=GameRoom)
-def delete_game_room_endpoint(game_id: int, room_id: int, db: Session = Depends(get_db)):
+async def delete_game_room_endpoint(game_id: int, room_id: int, db: Session = Depends(get_db)):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -135,11 +139,12 @@ def delete_game_room_endpoint(game_id: int, room_id: int, db: Session = Depends(
     deleted_room = delete_game_room(db=db, room_id=room_id)
     if deleted_room is None:
         raise HTTPException(status_code=404, detail="Game room not found")
+    await broadcast_room_list_update(db, game_id)
     return deleted_room
 
 
 @router.post("/{room_id}/players", response_model=GameRoomPlayerCreate)
-def add_player_endpoint(game_id: int, room_id: int, player: GameRoomPlayerCreate, db: Session = Depends(get_db)):
+async def add_player_endpoint(game_id: int, room_id: int, player: GameRoomPlayerCreate, db: Session = Depends(get_db)):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -149,13 +154,15 @@ def add_player_endpoint(game_id: int, room_id: int, player: GameRoomPlayerCreate
         raise HTTPException(status_code=404, detail="Game room not found")
 
     try:
-        return add_player_to_room(db=db, room_id=room_id, user_id=player.user_id)
+        result = add_player_to_room(db=db, room_id=room_id, user_id=player.user_id)
+        await broadcast_room_list_update(db, game_id)
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/{room_id}/players/{user_id}", response_model=GameRoomPlayerCreate)
-def remove_player_endpoint(game_id: int, room_id: int, user_id: int, db: Session = Depends(get_db)):
+async def remove_player_endpoint(game_id: int, room_id: int, user_id: int, db: Session = Depends(get_db)):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -167,4 +174,5 @@ def remove_player_endpoint(game_id: int, room_id: int, user_id: int, db: Session
     deleted_player = remove_player_from_room(db=db, room_id=room_id, user_id=user_id)
     if deleted_player is None:
         raise HTTPException(status_code=404, detail="Player not found in the room")
+    await broadcast_room_list_update(db, game_id)
     return deleted_player

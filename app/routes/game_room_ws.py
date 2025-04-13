@@ -7,6 +7,7 @@ from typing import Dict
 
 from app.database.base import get_db
 from app.websockets.manager import connection_manager, GameWebSocketMessageType, WebSocketMessageType, WebSocketMessage
+from app.routes.game_rooms_ws import broadcast_room_list_update
 from app.crud.game_room import (
     get_game_room,
     add_player_to_room,
@@ -74,6 +75,7 @@ async def websocket_room_endpoint(
         # Add player to room
         if not is_player_in_room:
             player_data = add_player_to_room(db, room_id, user_id)
+            await broadcast_room_list_update(db, game_id)
         else:
             player_data = get_room_player(db, room_id, user_id)
 
@@ -301,6 +303,7 @@ async def process_websocket_messages(
         # Remove player from room
         if room.status.name == RoomStatus.WAITING.name:
             remove_player_from_room(db, room_id, user_id)
+            await broadcast_room_list_update(db, room.game_id)
 
             leave_message = WebSocketMessage(
                 type=WebSocketMessageType.USER_LEFT,
