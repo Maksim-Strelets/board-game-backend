@@ -102,10 +102,6 @@ async def websocket_room_endpoint(
             )
             await connection_manager.broadcast(room_id, join_message.to_dict())
 
-        if room_id in active_games:
-            await active_games[room_id].resend_pending_requests(user_id)
-            await active_games[room_id].resend_game_messages(user_id)
-
         # Create a separate task for receiving messages
         receiver_task = asyncio.create_task(
             process_websocket_messages(websocket, room_id, user_id, db)
@@ -266,7 +262,7 @@ async def process_websocket_messages(
                     if active_games[room_id].is_game_over:
                         await websocket.send_json({
                             "type": WebSocketMessageType.GAME_ENDED,
-                            "state": jsonable_encoder(active_games[room_id].get_game_stats()),
+                            "stats": jsonable_encoder(active_games[room_id].get_game_stats()),
                         })
                 elif room.status.name == RoomStatus.IN_PROGRESS.name:
                     await start_game(db, room_id)
@@ -275,6 +271,11 @@ async def process_websocket_messages(
                         "type": GameWebSocketMessageType.GAME_ERROR,
                         "message": "Game not started"
                     })
+
+            elif message_type == GameWebSocketMessageType.RESEND_PENDING_DATA:
+                if room_id in active_games:
+                    await active_games[room_id].resend_pending_requests(user_id)
+                    await active_games[room_id].resend_game_messages(user_id)
 
             elif message_type == GameWebSocketMessageType.GAME_MOVE:
                 # Process game move

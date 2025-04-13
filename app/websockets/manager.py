@@ -62,6 +62,7 @@ class GameWebSocketMessageType:
     GAME_UPDATE = "game_update"
     GAME_MOVE = "game_move"
     GAME_ERROR = "game_error"
+    RESEND_PENDING_DATA = "resend_pending_data"
 
 
 class WebSocketMessageType:

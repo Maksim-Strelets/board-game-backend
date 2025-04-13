@@ -294,7 +294,7 @@ class BorshtManager(AbstractGameManager):
         if recipe_completed and self.first_finisher is None:
             self.first_finisher = player_id
             self.game_ending = True
-            message =  {
+            message = {
                 'type': WebSocketGameMessage.RECIPE_COMPLETED,
                 'player': jsonable_encoder(serialize_player(self.players[player_id])),
                 'is_first': True
@@ -307,11 +307,7 @@ class BorshtManager(AbstractGameManager):
             self.next_player()
             self.turn_state = GameState.NORMAL_TURN
 
-            # Check if game is over (all players have had their final turn)
-            if self.game_ending and self.current_player_id == self.first_finisher:
-                # If we've gone around to the player who completed their recipe first
-                self.is_game_over = True
-                self._determine_winner()
+            self.is_game_over, self.winner = self.check_game_over()
 
             message = {
                 'type': WebSocketGameMessage.NEW_TURN,
@@ -1600,8 +1596,7 @@ class BorshtManager(AbstractGameManager):
         # Check if someone has completed their recipe
         if self.first_finisher is not None:
             # Check if we've gone around to the first finisher
-            current_player = self.players[self.current_player_index]
-            if str(current_player) == str(self.first_finisher):
+            if self.current_player_id == self.first_finisher:
                 # Everyone has had their final turn, game is over
                 self.is_game_over = True
                 winner_id = self._determine_winner()
@@ -1847,7 +1842,7 @@ class BorshtManager(AbstractGameManager):
             # Calculate recipe completion percentage
             recipe_ingredients = recipe['ingredients']
             player_ingredient_ids = [card['id'] for card in borsht_ingredients]
-            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredient_ids]
+            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredient_ids or ing == 'vinnik_lard']
             completion_percentage = (len(completed_ingredients) / len(recipe_ingredients)) * 100
 
             # Calculate points breakdown

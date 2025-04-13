@@ -4,12 +4,7 @@ from typing import Dict, Any, Tuple, List, Optional
 
 from fastapi.encoders import jsonable_encoder
 
-from app.crud.game_room import update_game_room, get_game_room, update_player_status
-from app.crud.user import get_user
-from app.database.models import RoomStatus, PlayerStatus
-from app.schemas.game_room import GameRoomUpdate
-from app.serializers.user import serialize_user
-from app.websockets.manager import ConnectionManager, WebSocketMessageType, GameWebSocketMessageType, WebSocketMessage
+from app.websockets.manager import ConnectionManager, WebSocketMessageType
 
 
 class AbstractGameManager(ABC):
@@ -45,9 +40,6 @@ class AbstractGameManager(ABC):
             Tuple of (success, error_message, updated_state)
         """
         # Process the move
-        room = get_game_room(self.db, self.room_id)
-        user = get_user(self.db, player_id)
-        user_public = serialize_user(user)
         success, error_message, is_game_over = await self._process_move(player_id, move_data)
 
         if not success:
@@ -69,7 +61,6 @@ class AbstractGameManager(ABC):
             "type": WebSocketMessageType.GAME_ENDED,
             "stats": jsonable_encoder(game_stats)
         })
-
 
     @abstractmethod
     async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
