@@ -5,7 +5,10 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import Dict
 
+from starlette import status
+
 from app.database.base import get_db
+from app.websockets.auth import websocket_auth
 from app.websockets.manager import connection_manager, GameWebSocketMessageType, WebSocketMessageType, WebSocketMessage
 from app.routes.game_rooms_ws import broadcast_room_list_update
 from app.crud.game_room import (
@@ -48,11 +51,12 @@ async def websocket_room_endpoint(
         await websocket.close(code=4004, reason="Room not found")
         return
 
-    # Extract user_id from query params (in a real app, this would come from authentication)
-    try:
-        user_id = int(websocket.query_params.get('user_id', 0))
-    except (ValueError, TypeError):
-        await websocket.close(code=4003, reason="Invalid user ID")
+    # Authenticate the user before accepting the connection
+    user_id = await websocket_auth.authenticate(websocket)
+
+    if not user_id:
+        # Close the connection if authentication fails
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Authentication failed")
         return
 
     # Fetch user data

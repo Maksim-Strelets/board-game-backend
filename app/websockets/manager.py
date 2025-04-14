@@ -2,8 +2,10 @@
 from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket
 from fastapi.encoders import jsonable_encoder
+from starlette import status
 
 from app.schemas.user import UserResponse
+from app.websockets.auth import websocket_auth
 
 
 class ConnectionManager:
@@ -15,6 +17,13 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, room_id: int, user_id: int):
         """Connect a user to a specific room's websocket"""
+        # Authenticate the user before accepting the connection
+        user_id = await websocket_auth.authenticate(websocket)
+
+        if not user_id:
+            # Close the connection if authentication fails
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Authentication failed")
+            return
         await websocket.accept()
 
         # Add to room connections

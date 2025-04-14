@@ -15,7 +15,7 @@ base_cards = [
     *[{"id": "pork", "type": "regular", "name": "Свинина", "cost": 2, "points": 1} for _ in range(6)],
 
     # rare
-    *[{"id": "beaf", "type": "rare", "name": "Яловичина", "cost": 3, "points": 2} for _ in range(4)],
+    *[{"id": "beef", "type": "rare", "name": "Яловичина", "cost": 3, "points": 2} for _ in range(4)],
     *[{"id": "beans", "type": "rare", "name": "Квасоля", "cost": 3, "points": 2} for _ in range(3)],
     *[{"id": "eggs", "type": "rare", "name": "Яйця", "cost": 4, "points": 3} for _ in range(4)],
     *[{"id": "mushroom", "type": "rare", "name": "Гриби", "cost": 3, "points": 2} for _ in range(3)],
@@ -60,7 +60,7 @@ recipes = [
   {
     "id": "donetskyi_borscht",
     "name": "Донецький борщ",
-    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "fresh_tomato", "beet", "fish", "beaf",
+    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "fresh_tomato", "beet", "fish", "beef",
                     "sauerkraut"],
     "levels": {5: 4, 7: 7, 10: 9}
   },
@@ -82,7 +82,7 @@ recipes = [
     "id": "borscht_z_baklazhanamy",
     "name": "Борщ із баклажанами",
     "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "fresh_tomato", "beet", "pork", "eggplant",
-                    "beens"],
+                    "beans"],
     "levels": {5: 4, 7: 6, 10: 8}
   },
   {
@@ -101,7 +101,7 @@ recipes = [
   {
     "id": "lvivskyi_borscht",
     "name": "Львівський борщ",
-    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "fresh_tomato", "beet", "beens", "beaf",
+    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "fresh_tomato", "beet", "beans", "beef",
                     "mushroom"],
     "levels": {5: 4, 7: 7, 10: 9}
   },
@@ -109,7 +109,7 @@ recipes = [
     "id": "pisnyi_z_grushoi",
     "name": "Пісний борщ із копченою грушею",
     "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "beet", "sweet_pepper",
-                    "beens", "smoked_pear", "celery_root"],
+                    "beans", "smoked_pear", "celery_root"],
     "levels": {5: 4, 7: 6, 10: 8}
   },
   {
@@ -167,7 +167,7 @@ recipes = [
   {
     "id": "frankivskyi_borscht",
     "name": "Івано-франківський борщ",
-    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "beet", "apple", "beaf"],
+    "ingredients": ["cabbage", "onion", "tomato_paste", "carrot", "potato", "beet", "apple", "beef"],
     "levels": {4: 4, 6: 6, 8: 7}
   },
   {
@@ -186,14 +186,14 @@ recipes = [
   {
     "id": "pisnyi_z_grybamy",
     "name": "Пісний борщ із грибними кльоцками",
-    "ingredients": ["cabbage", "onion", "celery_root", "carrot", "potato", "eggs", "beet", "beens", "flour",
+    "ingredients": ["cabbage", "onion", "celery_root", "carrot", "potato", "eggs", "beet", "beans", "flour",
                     "mushroom"],
     "levels": {5: 4, 7: 6, 10: 8}
   },
   {
     "id": "guzulskyi_borscht",
     "name": "Гуцульський борщ",
-    "ingredients": ["white_beet", "onion", "home_sauseges", "carrot", "potato", "beet_kvass", "beaf"],
+    "ingredients": ["white_beet", "onion", "home_sauseges", "carrot", "potato", "beet_kvass", "beef"],
     "levels": {4: 3, 5: 5, 7: 6}
   },
 ]

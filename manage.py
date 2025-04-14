@@ -18,6 +18,7 @@ from app.routes import (
     chat_messages,
 )
 from app.config import settings
+from app.middleware.auth import AuthMiddleware
 
 # Create CLI app for database and server management
 cli = typer.Typer()
@@ -31,6 +32,9 @@ app.add_middleware(
     allow_methods=settings.CORS_ALLOW_METHODS,
     allow_headers=settings.CORS_ALLOW_HEADERS,
 )
+
+# Add Authentication Middleware
+app.add_middleware(AuthMiddleware)
 
 # Database and Application Setup
 Base.metadata.create_all(bind=engine)

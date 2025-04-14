@@ -19,6 +19,8 @@ email-validator="==2.2.0"
 envparse = "*"
 bcrypt = "*"
 websockets = "*"
+PyJWT = "==2.5.0"
+aiohttp = "*"
 
 [dev-packages]
 

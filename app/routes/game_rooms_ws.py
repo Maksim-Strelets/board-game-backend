@@ -1,18 +1,16 @@
-import asyncio
 from starlette.websockets import WebSocketState
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, Depends, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from typing import Dict, Set, Any
 import logging
 
-from app.crud.user import get_user
 from app.database.base import get_db
 from app.crud.game_room import get_game_rooms_by_game
 from app.schemas.game_room import GameRoomWithPlayers, GameRoomPlayerResponse
 from app.schemas.user import UserResponse
-from app.serializers.user import serialize_user
+from app.websockets.auth import websocket_auth
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -69,15 +67,19 @@ async def get_rooms_data(db: Session, game_id: int) -> list:
 
 @router.websocket("/ws/game/{game_id}/")
 async def room_list_websocket(websocket: WebSocket, game_id: int, db: Session = Depends(get_db)):
+    # Authenticate the user before accepting the connection
+    user_id = await websocket_auth.authenticate(websocket)
+
+    if not user_id:
+        # Close the connection if authentication fails
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Authentication failed")
+        logger.warning("WebSocket connection rejected due to authentication failure")
+        return
+
     await websocket.accept()
 
-    # Extract user_id from query params
-    try:
-        user_id = int(websocket.query_params.get('user_id', 0))
-    except (ValueError, TypeError):
-        logger.error("Invalid user ID in WebSocket connection")
-        await websocket.close(code=4003, reason="Invalid user ID")
-        return
+    # Store the user_id with the connection for later use
+    websocket.user_id = user_id
 
     # Add connection to room list listeners using a set to avoid duplicates
     if game_id not in room_list_connections:

@@ -975,18 +975,6 @@ class BorshtManager(AbstractGameManager):
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
 
-        # Broadcast defense results for all players who used defense
-        for target_player, defended in defense_results.items():
-            if defended:
-                message = {
-                    'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
-                    'attacker': player_id,
-                    'defender': target_player,
-                    'card': card,
-                }
-                self.game_messages.append(message)
-                await self.connection_manager.broadcast(self.room_id, message)
-
         # If no cards were stolen (all players defended or had empty hands)
         if not stolen_cards:
             return True, "No cards were stolen - all players defended or had empty hands"
@@ -1064,18 +1052,6 @@ class BorshtManager(AbstractGameManager):
                     'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
                     'player': jsonable_encoder(serialize_player(self.players[target_player])),
                     'card': discarded_card
-                }
-                self.game_messages.append(message)
-                await self.connection_manager.broadcast(self.room_id, message)
-
-        # Broadcast defense results for all players who used defense
-        for target_player, defended in defense_results.items():
-            if defended:
-                message = {
-                    'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
-                    'attacker': player_id,
-                    'defender': target_player,
-                    'card': card,
                 }
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
@@ -1167,16 +1143,6 @@ class BorshtManager(AbstractGameManager):
 
         # 4. Process the effect if no defense used
         if defense_used:
-            # 5. Broadcast defense result
-            message = {
-                'type': WebSocketGameMessage.DEFENSE_SUCCESSFUL,
-                'attacker': player_id,
-                'defender': target_player,
-                'card': card,
-            }
-            self.game_messages.append(message)
-            await self.connection_manager.broadcast(self.room_id, message)
-
             return True, "Target defended with Sour Cream"
 
         # Process the effect based on action type
