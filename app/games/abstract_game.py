@@ -9,8 +9,7 @@ from app.websockets.manager import ConnectionManager, WebSocketMessageType
 
 class AbstractGameManager(ABC):
     """Abstract base class for all game managers."""
-
-    def __init__(self, db, room, connection_manager: ConnectionManager):
+    def __init__(self, db, room, connection_manager: ConnectionManager, game_settings: dict = None):
         self.db = db
         self.pending_requests = {}
         self.sent_requests = {}

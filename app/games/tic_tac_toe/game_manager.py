@@ -12,8 +12,8 @@ from app.serializers.game import serialize_players
 class TicTacToeManager(AbstractGameManager):
     """Implementation of Tic Tac Toe game logic."""
 
-    def __init__(self, db, room, connection_manager):
-        super().__init__(db, room, connection_manager)
+    def __init__(self, db, room, connection_manager, game_settings: dict = None):
+        super().__init__(db, room, connection_manager, game_settings)
         # Ensure we have exactly 2 players
         if len(room.players) != 2:
             raise ValueError("Tic Tac Toe requires exactly 2 players")

@@ -59,25 +59,33 @@ class SpecialCardsProps:
 class GameSettings:
     general_player_select_timeout = 300
     borscht_recipes_select_count = 3
+    disposable_shkvarka_count = 0
+    permanent_shkvarka_count = 0
     market_capacity = 8
     player_hand_limit = 8
     player_start_hand_size = 5
     market_exchange_tax = 0
     special_cards = SpecialCardsProps()
 
+    def __init__(self, **kwargs):
+        for name, value in kwargs.items():
+            if self.__getattribute__(name):
+                self.__setattr__(name, value)
+
+        self.market_base_capacity = self.market_capacity
+
 
 class BorshtManager(AbstractGameManager):
-    game_settings = GameSettings()
-
     """Implementation of Borsht card game logic."""
-
-    def __init__(self, db, room, connection_manager):
+    def __init__(self, db, room, connection_manager, game_settings):
         self.is_started = False
 
-        super().__init__(db, room, connection_manager)
+        super().__init__(db, room, connection_manager, game_settings)
         # Ensure we have 2-5 players (based on game rules)
         if len(room.players) < 2 or len(room.players) > 5:
             raise ValueError("Borsht requires 2-5 players")
+
+        self.game_settings = GameSettings(**game_settings)
 
         # Track game start time for statistics
         self.start_time = time.time()
@@ -434,6 +442,10 @@ class BorshtManager(AbstractGameManager):
         """
         hand_size = len(current_hand)
         limit = self.game_settings.player_hand_limit
+
+        # unlimited hand
+        if limit is None:
+            return True, current_hand
 
         # Check if hand exceeds limit
         if hand_size <= limit:
@@ -1742,6 +1754,10 @@ class BorshtManager(AbstractGameManager):
             your_hand=self.player_hands[player_id].copy(),
             your_borsht=self.player_borsht[player_id].copy(),
             your_recipe=self.player_recipes[player_id].copy(),
+
+            # game settings
+            hand_cards_limit=self.game_settings.player_hand_limit,
+            market_base_limit=self.game_settings.market_base_capacity,
 
             # Information about other players
             players=dict(),

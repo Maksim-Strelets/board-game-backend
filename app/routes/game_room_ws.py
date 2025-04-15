@@ -237,6 +237,7 @@ async def process_websocket_messages(
                 # Update room status (only if authorized)
                 new_status = data.get('status')
                 update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus(new_status)))
+                await broadcast_room_list_update(db, room.game_id)
                 if new_status in [status.value for status in RoomStatus]:
                     # In a real app, add authorization check
                     status_message = WebSocketMessage(
@@ -252,7 +253,8 @@ async def process_websocket_messages(
 
                     # Initialize game when status changes to in_progress
                     if new_status == RoomStatus.IN_PROGRESS.value:
-                        await start_game(db, room_id)
+                        game_settings = data.get('settings', {})
+                        await start_game(db, room_id, game_settings)
 
                     if new_status == RoomStatus.ENDED.value:
                         await end_game(db, room_id)
@@ -271,7 +273,18 @@ async def process_websocket_messages(
                             "stats": jsonable_encoder(active_games[room_id].get_game_stats()),
                         })
                 elif room.status.name == RoomStatus.IN_PROGRESS.name:
-                    await start_game(db, room_id)
+                    update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.WAITING))
+                    await broadcast_room_list_update(db, room.game_id)
+                    status_message = WebSocketMessage(
+                        type=WebSocketMessageType.ROOM_STATUS_CHANGED,
+                        user_id=user_id,
+                        room_id=room_id,
+                        user=user_public,
+                        content={
+                            "status": RoomStatus.WAITING
+                        }
+                    )
+                    await connection_manager.broadcast(room_id, status_message.to_dict())
                 else:
                     await websocket.send_json({
                         "type": GameWebSocketMessageType.GAME_ERROR,
@@ -325,12 +338,12 @@ async def process_websocket_messages(
             await end_game(db, room_id)
 
 
-async def start_game(db, room_id):
+async def start_game(db, room_id, game_settings):
     # Get room data to determine players
     room = get_game_room(db, room_id)
 
     # Create game manager instance
-    game_manager = GameManagerFactory.create_game_manager(db, room, connection_manager)
+    game_manager = GameManagerFactory.create_game_manager(db, room, connection_manager, game_settings)
 
     # Store the game manager
     active_games[room_id] = game_manager
@@ -371,6 +384,7 @@ async def start_game(db, room_id):
 async def end_game(db, room_id):
     # Update room status to completed
     room = update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.ENDED))
+    await broadcast_room_list_update(db, room.game_id)
     del active_games[room_id]
 
     # Update player statuses
