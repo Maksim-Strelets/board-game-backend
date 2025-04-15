@@ -127,6 +127,7 @@ class BorshtManager(AbstractGameManager):
         self._generate_deck()
         await self._deal_initial_cards()
         await self._handle_market_refill()
+        self._add_shkvarkas()
 
         self.is_started = True
         for player in self.players:
@@ -226,6 +227,16 @@ class BorshtManager(AbstractGameManager):
                 'type': 'recipe_selected',
                 'recipe': selected_recipe['name']
             })
+
+    def _add_shkvarkas(self):
+        if self.game_settings.disposable_shkvarka_count:
+            random.shuffle(game_cards.skvarkas_disposable)
+            self.deck.extend(game_cards.skvarkas_disposable.copy()[:self.game_settings.disposable_shkvarka_count])
+        if self.game_settings.permanent_shkvarka_count:
+            random.shuffle(game_cards.skvarkas_permanent)
+            self.deck.extend(game_cards.skvarkas_permanent.copy()[:self.game_settings.permanent_shkvarka_count])
+
+        random.shuffle(self.deck)
 
     async def _process_move(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Process a player's move."""
