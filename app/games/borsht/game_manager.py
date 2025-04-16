@@ -347,6 +347,21 @@ class BorshtManager(AbstractGameManager):
 
         return True, None
 
+    async def _get_cards_from_deck(self, count) -> list[dict]:
+        cards = []
+        while len(cards) < count:
+            if len(self.deck) == 0:
+                self._reshuffle_discard()
+                if len(self.deck) == 0:
+                    return cards
+
+            card = self.deck.pop(0)
+            if card.get('type') == 'shkvarka':
+                await self._handle_shkvarka(self.current_player_id, card)
+            else:
+                cards.append(card)
+        return cards
+
     async def _handle_add_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Handle adding an ingredient to the player's borsht."""
         if 'card_id' not in move_data:
@@ -396,35 +411,12 @@ class BorshtManager(AbstractGameManager):
 
     async def _handle_draw_cards(self, player_id: int) -> Tuple[bool, Optional[str]]:
         """Handle drawing 2 cards from the deck."""
-        # Check if there are enough cards in the deck
-        if len(self.deck) < 2:
-            # If not enough cards, shuffle the discard pile
-            if len(self.discard_pile) > 0:
-                import random
-                self.deck.extend(self.discard_pile)
-                random.shuffle(self.deck)
-                self.discard_pile = []
-
-            # If still not enough cards, draw what's available
-            if len(self.deck) == 0:
-                return False, "No cards available to draw"
-
         # Draw up to 2 cards
         cards_to_draw = min(2, len(self.deck))
-        drawn_cards = self.deck[:cards_to_draw]
-        self.deck = self.deck[cards_to_draw:]
+        drawn_cards = await self._get_cards_from_deck(cards_to_draw)
 
-        # Check for shkvarka cards and process them
-        for i, card in enumerate(drawn_cards):
-            if card.get('type') == 'shkvarka':
-                # Process shkvarka card
-                self._handle_shkvarka(player_id, card)
-                # Replace shkvarka card with a new card from deck
-                if len(self.deck) > 0:
-                    drawn_cards[i] = self.deck.pop(0)
-                else:
-                    # If no more cards, just remove the shkvarka
-                    drawn_cards.pop(i)
+        if len(drawn_cards) == 0:
+            return False, "No cards available to draw"
 
         # Add cards to player's hand
         self.player_hands[player_id].extend(drawn_cards)
@@ -468,89 +460,145 @@ class BorshtManager(AbstractGameManager):
         # Calculate how many cards need to be discarded
         cards_to_discard = hand_size - limit
 
-        # Prepare request data
-        request_data = {
-            'hand': current_hand,
-            'discard_count': cards_to_discard,
-            'reason': 'hand_limit',
-            'your_recipe': self.player_recipes[player_id],
-        }
-
-        # Send discard selection request to player
-        response = await self._request_to_player(
-            player_id=player_id,
+        success, updated_hand, discarded_cards = await self._cards_selection_request(
+            owner_id=player_id,
+            cards=current_hand,
+            select_count=cards_to_discard,
             request_type='discard_selection',
-            request_data=request_data,
-            timeout=self.game_settings.general_player_select_timeout,
+            reason='hand_limit'
         )
 
+        # Add discarded cards to discard pile
+        self.discard_pile.extend(discarded_cards)
+
+        # Notify about discard
+        await self.connection_manager.send(self.room_id, player_id, {
+            'type': 'cards_discarded',
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
+            'cards': [card['id'] for card in discarded_cards]
+        })
+
+        return success, updated_hand
+
+    async def _cards_selection_request(self, owner_id, cards, select_count, reason, request_type, selector_id=None, timeout=None):
+        """
+        General method to handle card discard selection from a collection of cards.
+
+        Args:
+            owner_id (int): ID of the player who owns the cards
+            cards (List[Dict]): List of cards to select from
+            select_count (int): Number of cards to discard/select
+            reason (str): Reason for discard ('hand_limit', 'market_limit', 'shkvarka_effect', etc.)
+            request_type (str): request type
+            selector_id (int, optional): ID of the player making the selection (defaults to owner_id)
+            timeout (int, optional): Timeout for selection (defaults to general_player_select_timeout)
+
+        Returns:
+            Tuple[bool, List[Dict], List[Dict]]: (success, remaining_cards, discarded_cards)
+        """
+        if select_count <= 0 or len(cards) <= 0:
+            return True, cards, []
+
+        # If not enough cards to discard, discard all
+        if len(cards) <= select_count:
+            return True, [], cards.copy()
+
+        # Default selector to owner if not specified
+        selector_id = selector_id if selector_id is not None else owner_id
+        # Default timeout to general setting
+        timeout = timeout if timeout is not None else self.game_settings.general_player_select_timeout
+
+        # Save previous turn state and set waiting state
+        previous_state = self.turn_state
+        self.turn_state = GameState.WAITING_FOR_SELECTION
+        await self.send_game_update(selector_id)
+
+        # Prepare request data
+        request_data = {
+            'cards': cards,
+            'select_count': select_count,
+            'reason': reason,
+        }
+
+        # Add extra info if owner is not selector
+        if owner_id != selector_id:
+            request_data['owner_player'] = owner_id
+
+        response = await self._request_to_player(
+            player_id=selector_id,
+            request_type=request_type,
+            request_data=request_data,
+            timeout=timeout,
+        )
+
+        # Restore previous turn state
+        self.turn_state = previous_state
+
         # Process the response
-        if response.get('timed_out', False) or response.get('random_discard', False):
-            # discard random cards
-            discard_indices = random.sample(range(hand_size), cards_to_discard)
+        if response.get('timed_out', False) or response.get('random_select', False):
+            # Select random cards for discard
+            discard_indices = random.sample(range(len(cards)), select_count)
             discard_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
 
-            # Create copies of the hand for manipulation
-            updated_hand = current_hand.copy()
+            # Create copies for manipulation
+            updated_cards = cards.copy()
             discarded_cards = []
 
-            # Remove cards from hand and add to discard pile
+            # Remove cards and add to discard list
             for idx in discard_indices:
-                discarded_cards.append(updated_hand[idx])
-                updated_hand.pop(idx)
+                discarded_cards.append(updated_cards[idx])
+                updated_cards.pop(idx)
 
-            # Add discarded cards to discard pile
-            self.discard_pile.extend(discarded_cards)
-
-            # Notify about random discard
-            await self.connection_manager.send(self.room_id, player_id, {
-                'type': 'cards_discarded',
-                'player': jsonable_encoder(serialize_player(self.players[player_id])),
-                'count': cards_to_discard
-            })
-
-            return True, updated_hand
+            return True, updated_cards, discarded_cards
         else:
-            # Get player's selected cards to discard
+            # Process player's selected cards
             selected_card_ids = response.get('selected_cards', [])
 
-            # Validate selection
-            if len(selected_card_ids) != cards_to_discard:
+            # Validate selection count
+            if len(selected_card_ids) != select_count:
                 # Invalid selection, fall back to random
-                return await self._handle_hand_limit(player_id, current_hand)
+                return await self._cards_selection_request(owner_id, cards, select_count, reason, request_type, selector_id, timeout)
 
-            # Find the cards in the hand
-            updated_hand = current_hand.copy()
+            # Find and process each selected card
+            updated_cards = cards.copy()
             discarded_cards = []
 
-            # Process each selected card
             for card_id in selected_card_ids:
                 card_found = False
-                for i, card in enumerate(updated_hand):
+                for i, card in enumerate(updated_cards):
                     if card['uid'] == card_id:
                         discarded_cards.append(card)
-                        updated_hand.pop(i)
+                        updated_cards.pop(i)
                         card_found = True
                         break
 
                 if not card_found:
-                    # Card not found, invalid selection
-                    return await self._handle_hand_limit(player_id, current_hand)
+                    # Card not found, invalid selection, fall back to random
+                    return await self._cards_selection_request(owner_id, cards, select_count, reason, request_type, selector_id,
+                                                             timeout)
 
-            # Add discarded cards to discard pile
-            self.discard_pile.extend(discarded_cards)
+            return True, updated_cards, discarded_cards
 
-            # Notify about discard
-            await self.connection_manager.send(self.room_id, player_id, {
-                'type': 'cards_discarded',
-                'player': jsonable_encoder(serialize_player(self.players[player_id])),
-                'cards': [card['id'] for card in discarded_cards]
-            })
+    async def _handle_shkvarka(self, player_id, card):
+        # Broadcast that a shkvarka card was drawn
+        message = {
+            'type': 'shkvarka_drawn',
+            'player': jsonable_encoder(serialize_player(self.players[player_id])),
+            'card': card
+        }
 
-            return True, updated_hand
+        self.game_messages.append(message)
+        await self.connection_manager.broadcast(self.room_id, message)
 
-    def _handle_shkvarka(self, player_id, card):
-        pass
+        if card.get('subtype', '') == 'permanent':
+            self.active_shkvarkas.append(card)
+
+        handler = self.__getattribute__(f"_handle_shkvarka_{card['id']}")
+        if not handler:
+            print(f"Shkvarka {card['id']} has no handler")
+            return
+
+        await handler(card)
 
     async def _handle_special_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Handle playing a special ingredient for its effect."""
@@ -628,73 +676,25 @@ class BorshtManager(AbstractGameManager):
         """
         Handle the Cinnamon special card effect.
         Allows player to choose up to n cards from the discard pile.
-
-        Returns:
-            Tuple[bool, Optional[str]]: Success status and error message if any
         """
         # Check if discard pile has any cards
         if len(self.discard_pile) == 0:
             return True, "No cards in discard pile"
 
-        # Determine how many cards player can select (up to 3, limited by discard pile size)
+        # Determine how many cards player can select (limited by discard pile size)
         max_select = min(self.game_settings.special_cards.cinnamon_select_count, len(self.discard_pile))
 
-        self.turn_state = GameState.WAITING_FOR_SELECTION
-        await self.send_game_update(player_id)
-
-        cards_to_select = {card['id']: card for card in self.discard_pile}
-
-        # Prepare request data
-        request_data = {
-            'discard_pile': list(cards_to_select.values()),
-            'select_count': max_select,
-        }
-
-        # Send request to player for card selection
-        response = await self._request_to_player(
-            player_id=player_id,
+        # Use the general discard request in "selection mode"
+        success, remaining_discard, selected_cards = await self._cards_selection_request(
+            owner_id=player_id,
+            cards=self.discard_pile.copy(),
+            select_count=max_select,
             request_type='cinnamon_selection',
-            request_data=request_data,
-            timeout=self.game_settings.general_player_select_timeout,
+            reason='cinnamon_selection'
         )
 
-        # Process the response
-        if response.get('timed_out', False) or response.get('random_selection', False):
-            # If timed out or player chose random selection, select random cards
-            selected_indices = random.sample(range(len(self.discard_pile)), max_select)
-            selected_cards = [self.discard_pile[i] for i in selected_indices]
-
-            # Remove cards from discard pile (in reverse order to avoid index issues)
-            for idx in sorted(selected_indices, reverse=True):
-                self.discard_pile.pop(idx)
-
-        else:
-            # Process player's selected cards
-            selected_card_ids = response.get('selected_cards', [])
-
-            # Validate selection count
-            if len(selected_card_ids) > max_select:
-                return False, f"Too many cards selected. Maximum is {max_select}."
-
-            # Find and collect the selected cards
-            selected_cards = []
-            remaining_discard_pile = self.discard_pile.copy()
-
-            for card_uid in selected_card_ids:
-                card_found = False
-                for i, card in enumerate(remaining_discard_pile):
-                    if card['uid'] == card_uid:
-                        selected_cards.append(card)
-                        remaining_discard_pile.pop(i)
-                        card_found = True
-                        break
-
-                if not card_found:
-                    # Card not found, invalid selection
-                    return False, "Invalid card selection"
-
-            # Update the discard pile
-            self.discard_pile = remaining_discard_pile
+        # Update the discard pile
+        self.discard_pile = remaining_discard
 
         # Add selected cards to player's hand
         self.player_hands[player_id].extend(selected_cards)
@@ -731,66 +731,23 @@ class BorshtManager(AbstractGameManager):
         await self.send_game_update(player_id)
 
         # Look at top n cards (or as many as available)
-        top_cards = self.deck[:look_count]
+        top_cards = await self._get_cards_from_deck(look_count)
 
-        request_data = {
-            'select_count': select_count,
-            'cards': top_cards,
-            'your_hand': self.player_hands[player_id],
-        }
-
-        response = await self._request_to_player(
-            player_id=player_id,
+        # Use general discard request in "selection mode" (we keep the selected cards)
+        success, cards_to_return, selected_cards = await self._cards_selection_request(
+            owner_id=player_id,
+            cards=top_cards,
+            select_count=select_count,
             request_type='olive_oil_selection',
-            request_data=request_data,
-            timeout=self.game_settings.general_player_select_timeout,
+            reason='olive_oil_selection'
         )
 
-        # Process the response
-        if response.get('timed_out', False) or response.get('random_select', False):
-            # select random cards
-            select_indices = random.sample(range(select_count), len(top_cards))
-            select_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
-
-            # Create copies of the hand for manipulation
-            updated_top = top_cards.copy()
-            selected_cards = []
-
-            # Remove cards from hand and add to discard pile
-            for idx in top_cards:
-                selected_cards.append(updated_top[idx])
-                updated_top.pop(idx)
-        else:
-            # Get player's selected cards to discard
-            selected_card_ids = response.get('selected_cards', [])
-
-            # Validate selection
-            if len(selected_card_ids) != select_count:
-                # Invalid selection, fall back to random
-                return await self._handle_olive_oil(player_id)
-
-            # Find the cards in the hand
-            updated_top = top_cards.copy()
-            selected_cards = []
-
-            # Process each selected card
-            for card_id in selected_card_ids:
-                card_found = False
-                for i, card in enumerate(updated_top):
-                    if card['uid'] == card_id:
-                        selected_cards.append(card)
-                        updated_top.pop(i)
-                        card_found = True
-                        break
-
-                if not card_found:
-                    # Card not found, invalid selection
-                    return await self._handle_olive_oil(player_id)
-
-        self.deck = updated_top + self.deck[look_count:]
+        # Return unselected cards to the deck
+        self.deck = cards_to_return + self.deck[look_count:]
+        # Add selected cards to player's hand
         self.player_hands[player_id].extend(selected_cards)
 
-        # Notify about random select
+        # Notify about selection
         await self.connection_manager.send(self.room_id, player_id, {
             'type': 'cards_selected',
             'cards': selected_cards,
@@ -815,61 +772,20 @@ class BorshtManager(AbstractGameManager):
 
         self.turn_state = GameState.WAITING_FOR_SELECTION
         await self.send_game_update(player_id)
-
-        # Determine how many cards player can select (up to 3, limited by market size)
+        # Determine how many cards player can select (limited by market size)
         max_select = min(self.game_settings.special_cards.ginger_select_count, len(self.market))
 
-        # Prepare request data
-        request_data = {
-            'market': self.market,
-            'select_count': max_select,
-        }
-
-        # Send request to player for card selection
-        response = await self._request_to_player(
-            player_id=player_id,
+        # Use the general discard request in "selection mode"
+        success, remaining_market, selected_cards = await self._cards_selection_request(
+            owner_id=player_id,
+            cards=self.market.copy(),
+            select_count=max_select,
             request_type='ginger_selection',
-            request_data=request_data,
-            timeout=self.game_settings.general_player_select_timeout,
+            reason='ginger_selection'
         )
 
-        # Process the response
-        if response.get('timed_out', False) or response.get('random_selection', False):
-            # If timed out or player chose random selection, select random cards
-            selected_indices = random.sample(range(len(self.market)), max_select)
-            selected_cards = [self.market[i] for i in selected_indices]
-
-            # Remove cards from market (in reverse order to avoid index issues)
-            for idx in sorted(selected_indices, reverse=True):
-                self.market.pop(idx)
-
-        else:
-            # Process player's selected cards
-            selected_card_ids = response.get('selected_cards', [])
-
-            # Validate selection count
-            if len(selected_card_ids) > max_select:
-                return False, f"Too many cards selected. Maximum is {max_select}."
-
-            # Find and collect the selected cards
-            selected_cards = []
-            remaining_market = self.market.copy()
-
-            for card_uid in selected_card_ids:
-                card_found = False
-                for i, card in enumerate(remaining_market):
-                    if card['uid'] == card_uid:
-                        selected_cards.append(card)
-                        remaining_market.pop(i)
-                        card_found = True
-                        break
-
-                if not card_found:
-                    # Card not found, invalid selection
-                    return False, "Invalid card selection"
-
-            # Update the market
-            self.market = remaining_market
+        # Update the market
+        self.market = remaining_market
 
         # Add selected cards to player's hand
         self.player_hands[player_id].extend(selected_cards)
@@ -882,6 +798,7 @@ class BorshtManager(AbstractGameManager):
         self.game_messages.append(message)
         await self.connection_manager.broadcast(self.room_id, message)
 
+        # Refill the market
         await self._handle_market_refill()
 
         return True, None
@@ -1333,64 +1250,17 @@ class BorshtManager(AbstractGameManager):
             self.turn_state = GameState.WAITING_FOR_SELECTION
             await self.send_game_update(self.current_player_id)
 
-            # Prepare request data
-            request_data = {
-                'market': self.market,
-                'discard_count': cards_to_discard,
-                'reason': 'market_limit',
-            }
-
-            # Send discard selection request to player
-            response = await self._request_to_player(
-                player_id=self.current_player_id,
+            success, updated_market, discarded_cards = await self._cards_selection_request(
+                owner_id=self.current_player_id,
+                cards=self.market.copy(),
+                select_count=cards_to_discard,
                 request_type='discard_selection',
-                request_data=request_data,
-                timeout=self.game_settings.general_player_select_timeout,
+                reason='market_limit',
             )
-
-            # Create copies of the hand for manipulation
-            updated_market = self.market.copy()
-            discarded_cards = []
-
-            # Process the response
-            if response.get('timed_out', False) or response.get('random_discard', False):
-                # discard random cards
-                discard_indices = random.sample(range(len(self.market)), cards_to_discard)
-                discard_indices.sort(reverse=True)  # Sort in reverse to avoid index shifting
-
-                # Remove cards from hand and add to discard pile
-                for idx in discard_indices:
-                    discarded_cards.append(updated_market[idx])
-                    updated_market.pop(idx)
-
-            else:
-                # Get player's selected cards to discard
-                selected_card_ids = response.get('selected_cards', [])
-
-                # Validate selection
-                if len(selected_card_ids) != cards_to_discard:
-                    # Invalid selection, fall back to random
-                    await self._handle_market_limit()
-                    return
-
-                # Process each selected card
-                for card_uid in selected_card_ids:
-                    card_found = False
-                    for i, card in enumerate(updated_market):
-                        if card['uid'] == card_uid:
-                            discarded_cards.append(card)
-                            updated_market.pop(i)
-                            card_found = True
-                            break
-
-                    if not card_found:
-                        # Card not found, invalid selection
-                        await self._handle_market_limit()
-                        return
 
             # Add discarded cards to discard pile
             self.discard_pile.extend(discarded_cards)
-
+            self.market = updated_market
             self.turn_state = temp_state
 
             # Notify about discard
@@ -1400,7 +1270,6 @@ class BorshtManager(AbstractGameManager):
             }
             self.game_messages.append(message)
             await self.connection_manager.broadcast(self.room_id, message)
-            self.market = updated_market
 
     async def _handle_market_refresh(self, cards_to_discard=None) -> None:
         """
@@ -1430,9 +1299,8 @@ class BorshtManager(AbstractGameManager):
             self._reshuffle_discard()
 
         # Get new cards from deck
-        new_cards = self.deck[:cards_to_add]
+        new_cards = await self._get_cards_from_deck(cards_to_add)
         self.market.extend(new_cards)
-        self.deck = self.deck[cards_to_add:]
 
         message = {
             'type': WebSocketGameMessage.MARKET_CARDS_ADDED,
@@ -1455,7 +1323,7 @@ class BorshtManager(AbstractGameManager):
         Skip shkvarka cards if present.
         """
         # Filter out shkvarka cards if applicable
-        regular_cards = [card for card in self.discard_pile
+        regular_cards = [card for card in self.discard_pile  # TODO: shkvarka not going to discard
                          if 'type' in card and card['type'] != 'shkvarka']
 
         # Shuffle the regular cards and add to deck
@@ -1532,13 +1400,6 @@ class BorshtManager(AbstractGameManager):
 
         # Add player cards to market
         self.market.extend([card for _, card in hand_card_objects])
-
-        # Replenish market if needed
-        cards_needed = self.game_settings.market_capacity - len(self.market)
-        if cards_needed > 0 and len(self.deck) > 0:
-            new_cards = self.deck[:cards_needed]
-            self.market.extend(new_cards)
-            self.deck = self.deck[cards_needed:]
 
         message = {
             'type': WebSocketGameMessage.INGREDIENTS_EXCHANGED,
@@ -1885,3 +1746,106 @@ class BorshtManager(AbstractGameManager):
         }
 
         return game_stats
+
+    async def _handle_shkvarka_blackout(self, card):
+        pass
+
+    async def _handle_shkvarka_u_komori_myshi(self, card):
+        """
+        Handle the 'U Komori Myshi' shkvarka effect.
+        Effect: Each player discards 2 arbitrary ingredients from the hand of the player to their left.
+        """
+        # Get ordered list of players for left-neighbor relationship
+        player_ids = list(self.players.keys())
+
+        # For each player, identify left neighbor and request discard
+        for i, current_player in enumerate(player_ids):
+            # Find left neighbor (clockwise direction)
+            left_neighbor_idx = (i + 1) % len(player_ids)
+            left_neighbor = player_ids[left_neighbor_idx]
+
+            # Skip if left neighbor has less than 2 cards
+            if len(self.player_hands[left_neighbor]) < 2:
+                success = True
+                discarded_cards = self.player_hands[left_neighbor]
+                updated_hand = []
+            else:
+                success, updated_hand, discarded_cards = await self._cards_selection_request(
+                    owner_id=left_neighbor,
+                    cards=self.player_hands[left_neighbor],
+                    select_count=2,
+                    reason='shkvarka_effect',
+                    request_type='shkvarka_discard_selection',
+                    selector_id=current_player,
+                )
+
+            # Update the hand
+            self.player_hands[left_neighbor] = updated_hand
+
+            # Add discarded cards to discard pile
+            self.discard_pile.extend(discarded_cards)
+
+            # Notify players about the discard
+            message = {
+                'type': 'shkvarka_effect_discard',
+                'card': card,
+                'selector_player': jsonable_encoder(serialize_player(self.players[current_player])),
+                'target_player': jsonable_encoder(serialize_player(self.players[left_neighbor])),
+                'discarded_cards': discarded_cards
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
+
+    async def _handle_shkvarka_garmyder_na_kuhni(self, card):
+        pass
+
+    async def _handle_shkvarka_zazdrisni_susidy(self, card):
+        pass
+
+    async def _handle_shkvarka_kuhar_rozbazikav(self, card):
+        pass
+
+    async def _handle_shkvarka_mityng_zahysnykiv(self, card):
+        pass
+
+    async def _handle_shkvarka_yarmarok(self, card):
+        pass
+
+    async def _handle_shkvarka_zlodyi_nevdaha(self, card):
+        pass
+
+    async def _handle_shkvarka_vtratyv_niuh(self, card):
+        pass
+
+    async def _handle_shkvarka_den_vrozhaiu(self, card):
+        pass
+
+    async def _handle_shkvarka_zgorila_zasmazhka(self, card):
+        pass
+
+    async def _handle_shkvarka_zagubyly_spysok(self, card):
+        pass
+
+    async def _handle_shkvarka_rozsypaly_specii(self, card):
+        pass
+
+    async def _handle_shkvarka_postachalnyk_pereplutav(self, card):
+        pass
+
+    async def _handle_shkvarka_defolt_crisa(self, card):
+        pass
+
+    async def _handle_shkvarka_sanepidemstancia(self, card):
+        pass
+
+    async def _handle_shkvarka_kayenskyi_perec(self, card):
+        pass
+
+    async def _handle_shkvarka_porvalas_torbynka(self, card):
+        pass
+
+    async def _handle_shkvarka_peresolyly(self, card):
+        pass
+
+    async def _handle_shkvarka_molochka_skysla(self, card):
+        pass

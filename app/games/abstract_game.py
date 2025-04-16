@@ -123,3 +123,15 @@ class AbstractGameManager(ABC):
     def current_player_id(self) -> int:
         """Get current player ID."""
         return list(self.players.keys())[self.current_player_index]
+
+    @property
+    def prev_player_id(self) -> int:
+        """Get current player ID."""
+        prev_player_index = (self.current_player_index - 1) % len(self.players)
+        return list(self.players.keys())[prev_player_index]
+
+    @property
+    def next_player_id(self) -> int:
+        """Get current player ID."""
+        next_player_index = (self.current_player_index + 1) % len(self.players)
+        return list(self.players.keys())[next_player_index]
