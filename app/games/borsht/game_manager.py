@@ -69,7 +69,7 @@ class GameSettings:
 
     def __init__(self, **kwargs):
         for name, value in kwargs.items():
-            if self.__getattribute__(name):
+            if not self.__getattribute__(name) is None:
                 self.__setattr__(name, value)
 
         self.market_base_capacity = self.market_capacity
@@ -351,7 +351,7 @@ class BorshtManager(AbstractGameManager):
         cards = []
         while len(cards) < count:
             if len(self.deck) == 0:
-                self._reshuffle_discard()
+                await self._reshuffle_discard()
                 if len(self.deck) == 0:
                     return cards
 
@@ -517,12 +517,9 @@ class BorshtManager(AbstractGameManager):
         request_data = {
             'cards': cards,
             'select_count': select_count,
+            'owner_player': jsonable_encoder(serialize_player(self.players[owner_id])),
             'reason': reason,
         }
-
-        # Add extra info if owner is not selector
-        if owner_id != selector_id:
-            request_data['owner_player'] = owner_id
 
         response = await self._request_to_player(
             player_id=selector_id,
@@ -584,11 +581,12 @@ class BorshtManager(AbstractGameManager):
         message = {
             'type': 'shkvarka_drawn',
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
-            'card': card
+            'card': card,
+            'show_popup': True,
         }
-
-        self.game_messages.append(message)
         await self.connection_manager.broadcast(self.room_id, message)
+        message['show_popup'] = False
+        self.game_messages.append(message)
 
         if card.get('subtype', '') == 'permanent':
             self.active_shkvarkas.append(card)
@@ -597,8 +595,12 @@ class BorshtManager(AbstractGameManager):
         if not handler:
             print(f"Shkvarka {card['id']} has no handler")
             return
-
+        temp = self.turn_state
+        self.turn_state = GameState.WAITING_FOR_SELECTION
+        await self.broadcast_game_update()
         await handler(card)
+        self.turn_state = temp
+        await self.broadcast_game_update()
 
     async def _handle_special_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str], bool]:
         """Handle playing a special ingredient for its effect."""
@@ -718,11 +720,6 @@ class BorshtManager(AbstractGameManager):
     async def _handle_olive_oil(self, player_id):
         look_count = self.game_settings.special_cards.olive_oil_look_count
         select_count = self.game_settings.special_cards.olive_oil_select_count
-
-        # Look at top 5 cards and take 2
-        if len(self.deck) < look_count:
-            # If not enough cards, shuffle the discard pile
-            self._reshuffle_discard()
 
         if len(self.deck) < select_count:
             return False, "Not enough cards in deck"
@@ -1294,10 +1291,6 @@ class BorshtManager(AbstractGameManager):
     async def _handle_market_refill(self) -> None:
         cards_to_add = self.game_settings.market_capacity - len(self.market)
 
-        # Check if we need to reshuffle the deck
-        if len(self.deck) < cards_to_add and len(self.discard_pile) > 0:
-            self._reshuffle_discard()
-
         # Get new cards from deck
         new_cards = await self._get_cards_from_deck(cards_to_add)
         self.market.extend(new_cards)
@@ -1317,7 +1310,7 @@ class BorshtManager(AbstractGameManager):
             cards = self.market[cards_to_discard:]
             await self._handle_market_refresh(cards)
 
-    def _reshuffle_discard(self) -> None:
+    async def _reshuffle_discard(self) -> None:
         """
         Reshuffle discard pile into the ingredient deck.
         Skip shkvarka cards if present.
@@ -1333,6 +1326,8 @@ class BorshtManager(AbstractGameManager):
         # Clear discard pile (keeping only shkvarkas)
         self.discard_pile = [card for card in self.discard_pile
                              if 'type' in card and card['type'] == 'shkvarka']
+
+        await self.broadcast_game_update()
 
     async def _handle_exchange(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Handle exchanging ingredients with the market."""
@@ -1759,25 +1754,34 @@ class BorshtManager(AbstractGameManager):
         player_ids = list(self.players.keys())
 
         # For each player, identify left neighbor and request discard
+        requests = []
         for i, current_player in enumerate(player_ids):
             # Find left neighbor (clockwise direction)
             left_neighbor_idx = (i + 1) % len(player_ids)
             left_neighbor = player_ids[left_neighbor_idx]
 
             # Skip if left neighbor has less than 2 cards
+            if len(self.player_hands[left_neighbor]) > 2:
+                request = self._cards_selection_request(
+                    owner_id=left_neighbor,
+                    cards=self.player_hands[left_neighbor],
+                    select_count=2,
+                    reason='u_komori_myshi',
+                    request_type='shkvarka_effect_selection',
+                    selector_id=current_player,
+                )
+                task = asyncio.create_task(request)
+                requests.append((current_player, left_neighbor, task))
+
+        for current_player, left_neighbor, task in requests:
             if len(self.player_hands[left_neighbor]) < 2:
                 success = True
                 discarded_cards = self.player_hands[left_neighbor]
                 updated_hand = []
             else:
-                success, updated_hand, discarded_cards = await self._cards_selection_request(
-                    owner_id=left_neighbor,
-                    cards=self.player_hands[left_neighbor],
-                    select_count=2,
-                    reason='shkvarka_effect',
-                    request_type='shkvarka_discard_selection',
-                    selector_id=current_player,
-                )
+                if not task.done():
+                    await task
+                success, updated_hand, discarded_cards = task.result()
 
             # Update the hand
             self.player_hands[left_neighbor] = updated_hand
