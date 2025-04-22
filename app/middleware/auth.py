@@ -1,4 +1,3 @@
-# app/middleware/auth.py
 from typing import Optional, Callable, Dict, Any
 import jwt
 from jwt.exceptions import PyJWTError, ExpiredSignatureError

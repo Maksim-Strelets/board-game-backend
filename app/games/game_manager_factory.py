@@ -1,4 +1,3 @@
-# app/games/game_manager_factory.py
 from typing import Dict, List, Optional, Type
 import importlib
 from app.games.abstract_game import AbstractGameManager
@@ -27,18 +26,10 @@ class GameManagerFactory:
         Returns:
             Game manager instance or None if game not supported
         """
-        # Check if we have already registered this game
         if room.game_id in cls._game_managers:
             return cls._game_managers[room.game_id](db, room, connection_manager, game_settings)
 
-        # Try to dynamically load the game module
         try:
-            # Determine the expected module path based on game_id
-            # This assumes you have a directory structure like:
-            # app/games/{game_name}/game_manager.py
-
-            # First, query the database to get the game name from game_id
-            # For this example, we'll use a hardcoded mapping
             game_names = {
                 4: "tic_tac_toe",
                 6: "borsht",
@@ -51,20 +42,15 @@ class GameManagerFactory:
             game_name = game_names[room.game_id]
             module_path = f"app.games.{game_name}.game_manager"
 
-            # Import the module
             module = importlib.import_module(module_path)
 
-            # Find the game manager class
             for attr_name in dir(module):
                 attr = getattr(module, attr_name)
-                # Check if it's a class and a subclass of AbstractGameManager
                 if (isinstance(attr, type) and
                         issubclass(attr, AbstractGameManager) and
                         attr != AbstractGameManager):
-                    # Register the game manager for future use
                     cls.register_game(room.game_id, attr)
 
-                    # Create and return an instance
                     return attr(db, room, connection_manager, game_settings)
 
             return None

@@ -1,4 +1,3 @@
-# app/games/abstract_game.py
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple, List, Optional
 

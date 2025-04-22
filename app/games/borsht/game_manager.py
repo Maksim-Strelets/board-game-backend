@@ -1,4 +1,3 @@
-# app/games/borsht/game_manager.py
 import asyncio
 from typing import Dict, Any, Tuple, List, Optional
 import random

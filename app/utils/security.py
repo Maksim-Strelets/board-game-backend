@@ -1,8 +1,6 @@
-# app/utils/security.py
 from typing import Dict, Any, Optional
 
 import jwt
-from jwt import PyJWTError
 from passlib.context import CryptContext
 from jose import jwt
 from datetime import datetime, timedelta

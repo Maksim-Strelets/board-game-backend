@@ -1,4 +1,3 @@
-# app/manage.py
 import typer
 import uvicorn
 from fastapi import FastAPI
@@ -63,7 +62,6 @@ def runserver(
     )
 
 
-# TODO: fixme
 @cli.command()
 def createmigration(
         message: str = typer.Option(..., help="Migration message describing the changes")

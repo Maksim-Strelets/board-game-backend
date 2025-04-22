@@ -1,4 +1,3 @@
-# app/routers/game_room_ws.py
 import asyncio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from fastapi.encoders import jsonable_encoder
@@ -19,7 +18,7 @@ from app.crud.game_room import (
     remove_player_from_room,
     update_game_room,
 )
-from app.crud.user import get_user  # Assuming you have a user CRUD module
+from app.crud.user import get_user
 from app.schemas.game_room import (
     RoomStatus,
     PlayerStatus,
@@ -123,7 +122,6 @@ async def websocket_room_endpoint(
     finally:
         # Disconnect and cleanup
         connection_manager.disconnect(websocket, room_id, user_id)
-        # [existing cleanup code]
 
 
 async def process_websocket_messages(

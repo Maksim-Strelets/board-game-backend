@@ -1,4 +1,3 @@
-# app/routers/game_rooms.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
@@ -34,7 +33,6 @@ router = APIRouter(
 
 @router.post("/", response_model=GameRoom)
 async def create_game_room_endpoint(game_id: int, game_room: GameRoomCreate, db: Session = Depends(get_db)):
-    # Override the game_id from the path
     game_room.game_id = game_id
     try:
         room = create_game_room(db=db, game_room=game_room)

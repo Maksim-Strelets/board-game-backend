@@ -1,4 +1,3 @@
-# app/crud/board_game.py
 from sqlalchemy.orm import Session
 from app.database.models import BoardGame
 from app.schemas.board_game import BoardGameCreate, BoardGameUpdate

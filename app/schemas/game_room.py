@@ -1,9 +1,9 @@
-# app/schemas/game_room.py
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from enum import Enum
 
 from app.schemas.user import UserResponse
+
 
 class RoomStatus(str, Enum):
     WAITING = "waiting"
@@ -23,13 +23,16 @@ class GameRoomBase(BaseModel):
     max_players: int = Field(ge=2, le=20)
     status: RoomStatus = RoomStatus.WAITING
 
+
 class GameRoomCreate(GameRoomBase):
     pass
+
 
 class GameRoomUpdate(BaseModel):
     name: Optional[str] = None
     max_players: Optional[int] = None
     status: Optional[RoomStatus] = None
+
 
 class GameRoom(GameRoomBase):
     id: int
@@ -37,13 +40,16 @@ class GameRoom(GameRoomBase):
     class Config:
         orm_mode = True
 
+
 class GameRoomPlayerBase(BaseModel):
     room_id: int
     user_id: int
     status: Optional[PlayerStatus] = None
 
+
 class GameRoomPlayerCreate(GameRoomPlayerBase):
     pass
+
 
 class GameRoomPlayerResponse(GameRoomPlayerBase):
     id: int
@@ -51,6 +57,7 @@ class GameRoomPlayerResponse(GameRoomPlayerBase):
 
     class Config:
         orm_mode = True
+
 
 class GameRoomWithPlayers(GameRoom):
     players: List[GameRoomPlayerResponse] = []

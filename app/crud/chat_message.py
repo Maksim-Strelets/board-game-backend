@@ -1,7 +1,7 @@
-# app/crud/chat_message.py
 from sqlalchemy.orm import Session, joinedload
 from app.database.models import ChatMessage, User
 from app.schemas.chat_message import ChatMessageCreate
+
 
 def create_chat_message(db: Session, chat_message: ChatMessageCreate) -> ChatMessage:
     """
@@ -17,6 +17,7 @@ def create_chat_message(db: Session, chat_message: ChatMessageCreate) -> ChatMes
     db.refresh(db_message)
     return db_message
 
+
 def get_room_chat_messages(db: Session, room_id: int, limit: int = 50) -> list[ChatMessage]:
     """
     Retrieve recent chat messages for a specific room
@@ -29,6 +30,7 @@ def get_room_chat_messages(db: Session, room_id: int, limit: int = 50) -> list[C
         .limit(limit)
         .all()
     )
+
 
 def delete_room_chat_messages(db: Session, room_id: int):
     """

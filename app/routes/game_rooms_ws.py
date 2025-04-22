@@ -3,7 +3,7 @@ from starlette.websockets import WebSocketState
 from fastapi import APIRouter, WebSocket, Depends, status
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-from typing import Dict, Set, Any
+from typing import Dict, Set
 import logging
 
 from app.database.base import get_db
@@ -12,14 +12,11 @@ from app.schemas.game_room import GameRoomWithPlayers, GameRoomPlayerResponse
 from app.schemas.user import UserResponse
 from app.websockets.auth import websocket_auth
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Store connections for game room list listeners by game_id
-# Use a set instead of a list to avoid duplicates
 room_list_connections: Dict[int, Set[WebSocket]] = {}
 
 

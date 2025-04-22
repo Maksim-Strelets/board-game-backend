@@ -1,5 +1,4 @@
-# app/routers/chat_message.py
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List
 
@@ -22,7 +21,6 @@ def get_chat_messages(
     """
     messages = get_room_chat_messages(db, room_id, limit)
 
-    # Transform messages to include user details
     return [
         ChatMessageResponse(
             id=msg.id,

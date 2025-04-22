@@ -1,4 +1,3 @@
-# app/routes/auth.py
 from datetime import timedelta
 from typing import Optional
 
@@ -59,7 +58,6 @@ def login_for_access_token(
     }
 
 
-# Add this endpoint to your router
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
         response: Response,
@@ -131,7 +129,7 @@ async def refresh_token(
             key="refresh_token",
             value=new_refresh_token,
             httponly=True,
-            secure=not settings.DEBUG,  # Secure in production
+            secure=not settings.DEBUG,
             samesite="lax",
             max_age=max_age
         )

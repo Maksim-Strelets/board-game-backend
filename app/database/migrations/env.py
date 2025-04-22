@@ -4,23 +4,16 @@ from sqlalchemy import pool
 
 from alembic import context
 
-# Import all models to ensure they're recognized by Alembic
 from app.database.models import *
 from app.config import settings
 
-# this is the Alembic Config object, which provides
-# access to the values within the .ini file in use.
 config = context.config
 
-# Interpret the config file for Python logging.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
 target_metadata = Base.metadata
 
-# Set the SQLAlchemy URL from your settings
 config.set_main_option('sqlalchemy.url', settings.DATABASE_URL)
 
 def run_migrations_offline() -> None:
@@ -52,6 +45,7 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
+
 
 if context.is_offline_mode():
     run_migrations_offline()

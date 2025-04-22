@@ -1,4 +1,3 @@
-# app/websockets/manager.py
 from typing import Dict, Set, Any, Optional
 from fastapi import WebSocket
 from fastapi.encoders import jsonable_encoder

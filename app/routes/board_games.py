@@ -1,4 +1,3 @@
-# app/routers/board_games.py
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List
@@ -18,6 +17,7 @@ router = APIRouter(
     tags=["board-games"]
 )
 
+
 @router.post("/", response_model=BoardGame)
 def create_board_game_endpoint(board_game: BoardGameCreate, db: Session = Depends(get_db)):
     try:
@@ -25,10 +25,12 @@ def create_board_game_endpoint(board_game: BoardGameCreate, db: Session = Depend
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @router.get("/", response_model=List[BoardGame])
 def read_board_games(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     board_games = get_board_games(db, skip=skip, limit=limit)
     return board_games
+
 
 @router.get("/{board_game_id}", response_model=BoardGame)
 def read_board_game(board_game_id: int, db: Session = Depends(get_db)):
@@ -36,6 +38,7 @@ def read_board_game(board_game_id: int, db: Session = Depends(get_db)):
     if db_board_game is None:
         raise HTTPException(status_code=404, detail="Board game not found")
     return db_board_game
+
 
 @router.put("/{board_game_id}", response_model=BoardGame)
 def update_board_game_endpoint(board_game_id: int, board_game: BoardGameUpdate, db: Session = Depends(get_db)):
@@ -46,6 +49,7 @@ def update_board_game_endpoint(board_game_id: int, board_game: BoardGameUpdate, 
         return updated_board_game
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @router.delete("/{board_game_id}", response_model=BoardGame)
 def delete_board_game_endpoint(board_game_id: int, db: Session = Depends(get_db)):

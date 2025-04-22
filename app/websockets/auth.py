@@ -1,4 +1,3 @@
-# app/websockets/auth.py
 from fastapi import WebSocket, status
 from typing import Optional, Callable, Dict, Any
 import jwt
