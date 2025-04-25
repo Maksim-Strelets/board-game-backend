@@ -32,6 +32,7 @@ class WebSocketGameMessage:
     CARD_STOLEN = 'card_stolen'
     DEFENSE_SUCCESSFUL = 'defense_successful'
     BORSHT_CARD_DISCARDED = 'borsht_card_discarded'
+    CARDS_FROM_HAND_DISCARDED = 'cards_from_hand_discarded'
     CHILI_PEPPER_EFFECT_APPLIED = 'chili_pepper_effect_applied'
     CARDS_FROM_MARKET_DISCARDED = 'cards_from_market_discarded'
     MARKET_CARDS_ADDED = 'market_cards_added'
@@ -472,9 +473,9 @@ class BorshtManager(AbstractGameManager):
 
         # Notify about discard
         await self.connection_manager.send(self.room_id, player_id, {
-            'type': 'cards_discarded',
+            'type': WebSocketGameMessage.CARDS_FROM_HAND_DISCARDED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
-            'cards': [card['id'] for card in discarded_cards]
+            'cards': discarded_cards,
         })
 
         return success, updated_hand
@@ -987,7 +988,7 @@ class BorshtManager(AbstractGameManager):
                 message = {
                     'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
                     'player': jsonable_encoder(serialize_player(self.players[target_player])),
-                    'card': discarded_card
+                    'cards': [discarded_card],
                 }
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
@@ -1759,28 +1760,21 @@ class BorshtManager(AbstractGameManager):
             left_neighbor_idx = (i + 1) % len(player_ids)
             left_neighbor = player_ids[left_neighbor_idx]
 
-            # Skip if left neighbor has less than 2 cards
-            if len(self.player_hands[left_neighbor]) > 2:
-                request = self._cards_selection_request(
-                    owner_id=left_neighbor,
-                    cards=self.player_hands[left_neighbor],
-                    select_count=2,
-                    reason='u_komori_myshi',
-                    request_type='shkvarka_effect_selection',
-                    selector_id=current_player,
-                )
-                task = asyncio.create_task(request)
-                requests.append((current_player, left_neighbor, task))
+            request = self._cards_selection_request(
+                owner_id=left_neighbor,
+                cards=self.player_hands[left_neighbor],
+                select_count=2,
+                reason='u_komori_myshi',
+                request_type='shkvarka_effect_selection',
+                selector_id=current_player,
+            )
+            task = asyncio.create_task(request)
+            requests.append((current_player, left_neighbor, task))
 
         for current_player, left_neighbor, task in requests:
-            if len(self.player_hands[left_neighbor]) < 2:
-                success = True
-                discarded_cards = self.player_hands[left_neighbor]
-                updated_hand = []
-            else:
-                if not task.done():
-                    await task
-                success, updated_hand, discarded_cards = task.result()
+            if not task.done():
+                await task
+            success, updated_hand, discarded_cards = task.result()
 
             # Update the hand
             self.player_hands[left_neighbor] = updated_hand
@@ -1800,10 +1794,126 @@ class BorshtManager(AbstractGameManager):
             await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_garmyder_na_kuhni(self, card):
-        pass
+        """
+        Handle the 'Garmyder na Kuhni' shkvarka effect.
+        Effect: Each player passes their recipe card to the player on their left
+        and now cooks a new borsht. Ingredients not in the new recipe are discarded.
+        """
+        # Get ordered list of players for left-neighbor relationship
+        player_ids = list(self.players.keys())
+
+        # Save current recipes
+        old_recipes = {player_id: self.player_recipes[player_id] for player_id in player_ids}
+
+        # Pass recipes to the left
+        for i, current_player in enumerate(player_ids):
+            # Find left neighbor (clockwise direction)
+            left_neighbor_idx = (i + 1) % len(player_ids)
+            left_neighbor = player_ids[left_neighbor_idx]
+
+            # Pass recipe
+            self.player_recipes[current_player] = old_recipes[left_neighbor]
+
+        # For each player, discard ingredients not in new recipe
+        for player_id in player_ids:
+            new_recipe = self.player_recipes[player_id]
+            required_ingredients = new_recipe["ingredients"]
+
+            # Identify ingredients to discard
+            discarded_ingredients = []
+            updated_borsht = []
+
+            for ingredient in self.player_borsht[player_id]:
+                if ingredient['id'] in required_ingredients or ingredient['type'] == 'extra':
+                    updated_borsht.append(ingredient)
+                else:
+                    discarded_ingredients.append(ingredient)
+
+            # Update player's borsht
+            self.player_borsht[player_id] = updated_borsht
+
+            # Add discarded ingredients to discard pile
+            self.discard_pile.extend(discarded_ingredients)
+
+            # Notify about recipe change and discards
+            message = {
+                'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
+                'cards': discarded_ingredients,
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_zazdrisni_susidy(self, card):
-        pass
+        """
+        Handle the 'Zazdrisni Susidy' shkvarka effect.
+        Effect: The player with the most victory points discards any rare ingredient from their borsht.
+        """
+        # Calculate current points for each player
+        player_points = {}
+        for player_id in self.players:
+            points = sum(card['points'] for card in self.player_borsht[player_id])
+            player_points[player_id] = points
+
+        # Find player with most points
+        max_points = -1
+        max_points_player = None
+
+        for player_id, points in player_points.items():  # TODO: few players with most points
+            if points > max_points:
+                max_points = points
+                max_points_player = player_id
+
+        if not max_points_player:
+            return  # No player has any points
+
+        # Find all rare ingredients in the player's borsht
+        rare_ingredients = [
+            (i, ingredient) for i, ingredient in enumerate(self.player_borsht[max_points_player])
+            if ingredient['type'] == 'rare' and not ingredient.get('face_down', False)
+        ]
+
+        if not rare_ingredients:
+            # No rare ingredients to discard
+            message = {
+                'type': 'shkvarka_effect_no_rare',
+                'card': card,
+                'player': jsonable_encoder(serialize_player(self.players[max_points_player]))
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
+            return
+
+        # Prepare cards for selection
+        rare_cards = [card for _, card in rare_ingredients]
+
+        success, _, discarded_cards = await self._cards_selection_request(
+            owner_id=max_points_player,
+            cards=rare_cards,
+            select_count=1,
+            reason='zazdrisni_susidy',
+            request_type='shkvarka_effect_selection',
+        )
+
+        if success and discarded_cards:
+            # Remove the selected card from borsht
+            discarded_card = discarded_cards[0]
+            for i, ingredient in enumerate(self.player_borsht[max_points_player]):
+                if ingredient['uid'] == discarded_card['uid']:
+                    self.player_borsht[max_points_player].pop(i)
+                    break
+
+            # Add to discard pile
+            self.discard_pile.append(discarded_card)
+
+            # Notify about the discard
+            message = {
+                'type': 'borsht_card_discarded',
+                'cards': [discarded_card],
+                'player': jsonable_encoder(serialize_player(self.players[max_points_player])),
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_kuhar_rozbazikav(self, card):
         pass
@@ -1812,28 +1922,326 @@ class BorshtManager(AbstractGameManager):
         pass
 
     async def _handle_shkvarka_yarmarok(self, card):
-        pass
+        """
+        Handle the 'Yarmarok' shkvarka effect.
+        Effect: Each player selects a card from their hand and passes it to the player on their left.
+        """
+        # Get ordered list of players
+        player_ids = list(self.players.keys())
+
+        # For each player, request to select a card to pass
+        selected_cards = {}
+        requests = []
+
+        for player_id in player_ids:
+            # Skip if player has no cards
+            if not self.player_hands[player_id]:
+                continue
+
+            request = self._cards_selection_request(
+                owner_id=player_id,
+                cards=self.player_hands[player_id],
+                select_count=1,
+                reason='yarmarok',
+                request_type='shkvarka_effect_selection',
+            )
+            task = asyncio.create_task(request)
+            requests.append((player_id, task))
+
+        # Wait for all selections
+        for player_id, task in requests:
+            if not task.done():
+                await task
+            success, updated_hand, selected_card = task.result()
+
+            if success and selected_card:
+                # Update the player's hand and store selected card
+                self.player_hands[player_id] = updated_hand
+                selected_cards[player_id] = selected_card[0]
+
+        # Pass cards to the left
+        for i, current_player in enumerate(player_ids):
+            if current_player not in selected_cards:
+                continue
+
+            # Find left neighbor
+            left_neighbor_idx = (i + 1) % len(player_ids)
+            left_neighbor = player_ids[left_neighbor_idx]
+
+            # Pass the card
+            passed_card = selected_cards[current_player]
+            self.player_hands[left_neighbor].append(passed_card)
 
     async def _handle_shkvarka_zlodyi_nevdaha(self, card):
         pass
 
     async def _handle_shkvarka_vtratyv_niuh(self, card):
-        pass
+        """
+        Handle the 'Vtratyv Niuh' shkvarka effect.
+        Effect: Each player discards any extra ingredient from the borsht of the player to their right.
+        """
+        # Get ordered list of players
+        player_ids = list(self.players.keys())
+        requests = []
+
+        # For each player, identify right neighbor and process
+        for i, current_player in enumerate(player_ids):
+            # Find right neighbor (counter-clockwise)
+            right_neighbor_idx = (i - 1) % len(player_ids)
+            right_neighbor = player_ids[right_neighbor_idx]
+
+            # Find extra ingredients in right neighbor's borsht
+            extra_ingredients = [
+                (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[right_neighbor])
+                if ingredient.get('type') == 'extra' and not ingredient.get('face_down', False)
+            ]
+
+            if not extra_ingredients:
+                continue  # No extra ingredients to discard
+
+            # Request current player to select an extra ingredient to discard
+            extra_cards = [card for _, card in extra_ingredients]
+
+            request = self._cards_selection_request(
+                owner_id=right_neighbor,
+                cards=extra_cards,
+                select_count=1,
+                reason='vtratyv_niuh',
+                request_type='shkvarka_effect_selection',
+                selector_id=current_player,
+            )
+            task = asyncio.create_task(request)
+            requests.append((current_player, right_neighbor, task))
+
+        for current_player, right_neighbor, task in requests:
+            if not task.done():
+                await task
+            success, _, discarded_cards = task.result()
+
+            if success and discarded_cards:
+                # Remove the selected card from borsht
+                discarded_card = discarded_cards[0]
+                for idx, ingredient in enumerate(self.player_borsht[right_neighbor]):
+                    if ingredient['uid'] == discarded_card['uid']:
+                        self.player_borsht[right_neighbor].pop(idx)
+                        break
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify about the discard
+                message = {
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'cards': [discarded_card],
+                    'player': jsonable_encoder(serialize_player(self.players[right_neighbor])),
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_den_vrozhaiu(self, card):
-        pass
+        """
+        Handle the 'Den Vrozhaiu' shkvarka effect.
+        Effect: Each player discards 1 ingredient from their borsht that is currently in the market.
+        """
+        # Get market ingredient IDs
+        market_ingredient_ids = set(card['id'] for card in self.market)
+        requests = []
+
+        # Process each player
+        for player_id in self.players:
+            # Find ingredients in player's borsht that are in the market
+            matching_ingredients = [
+                (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[player_id])
+                if ingredient['id'] in market_ingredient_ids and not ingredient.get('face_down', False)
+            ]
+
+            if not matching_ingredients:
+                continue  # No matching ingredients to discard
+
+            # Request player to select an ingredient to discard
+            matching_cards = [card for _, card in matching_ingredients]
+
+            request = self._cards_selection_request(
+                owner_id=player_id,
+                cards=matching_cards,
+                select_count=1,
+                reason='den_vrozhaiu',
+                request_type='shkvarka_effect_selection',
+            )
+            task = asyncio.create_task(request)
+            requests.append((player_id, task))
+
+        for player_id, task in requests:
+            if not task.done():
+                await task
+            success, _, discarded_cards = task.result()
+
+            if success and discarded_cards:
+                # Remove the selected card from borsht
+                discarded_card = discarded_cards[0]
+                for idx, ingredient in enumerate(self.player_borsht[player_id]):
+                    if ingredient['uid'] == discarded_card['uid']:
+                        self.player_borsht[player_id].pop(idx)
+                        break
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify about the discard
+                message = {
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'cards': [discarded_card],
+                    'player': jsonable_encoder(serialize_player(self.players[player_id])),
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_zgorila_zasmazhka(self, card):
-        pass
+        """
+        Handle the 'Zgorila Zasmazhka' shkvarka effect.
+        Effect: All players discard onions and carrots from their borshts.
+        """
+        # Process each player
+        for player_id in self.players:
+            # Find onions and carrots in player's borsht
+            zasmazhka_indices = []
+
+            for idx, ingredient in enumerate(self.player_borsht[player_id]):
+                # Skip face-down cards
+                if ingredient.get('face_down', False):
+                    continue
+
+                # Check if card is onion or carrot
+                if ingredient['id'] in ['onion', 'carrot']:
+                    zasmazhka_indices.append(idx)
+
+            if not zasmazhka_indices:
+                continue  # No onions or carrots to discard
+
+            # Sort in reverse to avoid index shifting when removing
+            zasmazhka_indices.sort(reverse=True)
+
+            # Remove ingredients and track discarded cards
+            discarded_cards = []
+            for idx in zasmazhka_indices:
+                discarded_cards.append(self.player_borsht[player_id][idx])
+                self.player_borsht[player_id].pop(idx)
+
+            # Add to discard pile
+            self.discard_pile.extend(discarded_cards)
+
+            # Notify about the discard
+            message = {
+                'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                'cards': discarded_cards,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_zagubyly_spysok(self, card):
-        pass
+        """
+        Handle the 'Zagubyly Spysok' shkvarka effect.
+        Effect: Each player discards 1 ingredient from their borsht that is NOT currently in the market.
+        """
+        # Get market ingredient IDs
+        market_ingredient_ids = set(card['id'] for card in self.market)
+        requests = []
+
+        # Process each player
+        for player_id in self.players:
+            # Find ingredients in player's borsht that are NOT in the market
+            matching_ingredients = [
+                (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[player_id])
+                if ingredient['id'] not in market_ingredient_ids and not ingredient.get('face_down', False)
+            ]
+
+            if not matching_ingredients:
+                continue  # No matching ingredients to discard
+
+            # Request player to select an ingredient to discard
+            matching_cards = [card for _, card in matching_ingredients]
+
+            request = self._cards_selection_request(
+                owner_id=player_id,
+                cards=matching_cards,
+                select_count=1,
+                reason='zagubyly_spysok',
+                request_type='shkvarka_effect_selection',
+            )
+            task = asyncio.create_task(request)
+            requests.append((player_id, task))
+
+        for player_id, task in requests:
+            if not task.done():
+                await task
+            success, _, discarded_cards = task.result()
+
+            if success and discarded_cards:
+                # Remove the selected card from borsht
+                discarded_card = discarded_cards[0]
+                for idx, ingredient in enumerate(self.player_borsht[player_id]):
+                    if ingredient['uid'] == discarded_card['uid']:
+                        self.player_borsht[player_id].pop(idx)
+                        break
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify about the discard
+                message = {
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'player': jsonable_encoder(serialize_player(self.players[player_id])),
+                    'cards': [discarded_card],
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_rozsypaly_specii(self, card):
         pass
 
     async def _handle_shkvarka_postachalnyk_pereplutav(self, card):
-        pass
+        """
+        Handle the 'Postachalnyk Pereplutav' shkvarka effect.
+        Effect: Starting with the active player, each player in turn discards
+        all cards from their hand and draws 5 new ones from the deck.
+        """
+        # Get ordered list of players starting with current player
+        current_idx = -1
+
+        # Find current player index
+        for i, player_id in enumerate(self.players):
+            if player_id == self.current_player_id:
+                current_idx = i
+                break
+
+        if current_idx == -1:
+            # Fallback if current player not found
+            ordered_players = list(self.players.keys())
+        else:
+            # Create ordered list starting with current player
+            player_ids = list(self.players.keys())
+            ordered_players = player_ids[current_idx:] + player_ids[:current_idx]
+
+        # Process each player in turn
+        for player_id in ordered_players:
+            # Discard all cards from hand
+            discarded_cards = self.player_hands[player_id].copy()
+            self.discard_pile.extend(discarded_cards)
+            self.player_hands[player_id] = []
+
+            # Draw 5 new cards (or as many as available)
+            new_cards = await self._get_cards_from_deck(5)
+            self.player_hands[player_id].extend(new_cards)
+
+            # Notify about the discard and draw
+            message = {
+                'type': WebSocketGameMessage.CARDS_FROM_HAND_DISCARDED,
+                'cards': discarded_cards,
+                'player': jsonable_encoder(serialize_player(self.players[player_id])),
+            }
+            self.game_messages.append(message)
+            await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_defolt_crisa(self, card):
         pass
