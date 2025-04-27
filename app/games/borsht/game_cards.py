@@ -199,14 +199,14 @@ recipes = [
 ]
 
 skvarkas_disposable = [
-    {"id": "blackout", "type": "shkvarka", "subtype": "disposable", "name": "Блекаут", "description": "Кожен гравець може негайно викласти з руки у свій борщ 1 інгредієнт долілиць. Цей інгредієнт не можна скинути або забрати."},
+    # {"id": "blackout", "type": "shkvarka", "subtype": "disposable", "name": "Блекаут", "description": "Кожен гравець може негайно викласти з руки у свій борщ 1 інгредієнт долілиць. Цей інгредієнт не можна скинути або забрати."},
     {"id": "u_komori_myshi", "type": "shkvarka", "subtype": "disposable", "name": "У коморі завелися миші", "description": "Кожен гравець скидає 2 будь-які інгредієнти з руки гравця ліворуч."},
     {"id": "garmyder_na_kuhni", "type": "shkvarka", "subtype": "disposable", "name": "Тотальний гармидер на кухні", "description": "Кожен гравець передає свою карту рецепта гравцеві ліворуч і тепер варить новий борщ. Інгредієнти, яких немає в новому рецепті, скидають."},
     {"id": "zazdrisni_susidy", "type": "shkvarka", "subtype": "disposable", "name": "Заздрісні сусіди", "description": "Гравець з найбільшою кількістю ПО скидає будь-який рідкісний інгредієнт з борщу."},
     {"id": "kuhar_rozbazikav", "type": "shkvarka", "subtype": "disposable", "name": "Балакучий кухар усе розбазікав", "description": "Усі гравці кладуть свої карти рецептів горілиць і залишають їх так до кінця партії."},
     {"id": "mityng_zahysnykiv", "type": "shkvarka", "subtype": "disposable", "name": "Мітинг захисників тварин", "description": "Кожен гравець скидає свинину або яловичину зі свого борщу."},
     {"id": "yarmarok", "type": "shkvarka", "subtype": "disposable", "name": "Ярмарок", "description": "Кожен з гравців обирає карту з руки та передає гравцю ліворуч."},
-    {"id": "zlodyi_nevdaha", "type": "shkvarka", "subtype": "disposable", "name": "Злодюжка-невдаха", "description": "Гравець з найменшою кількістю ПО може забрати у свій борщ інгредієнт з борщу іншого гравця."},
+    # {"id": "zlodyi_nevdaha", "type": "shkvarka", "subtype": "disposable", "name": "Злодюжка-невдаха", "description": "Гравець з найменшою кількістю ПО може забрати у свій борщ інгредієнт з борщу іншого гравця."},
     {"id": "vtratyv_niuh", "type": "shkvarka", "subtype": "disposable", "name": "Кухар втратив нюх після ковіду", "description": "Кожен гравець скидає будь-який додатковий інгредієнт з борщу гравця праворуч."},
     {"id": "den_vrozhaiu", "type": "shkvarka", "subtype": "disposable", "name": "День збору врожаю", "description": "Кожен гравець скидає з борщу 1 інгредієнт, який зараз є на ринку."},
     {"id": "zgorila_zasmazhka", "type": "shkvarka", "subtype": "disposable", "name": "Згоріла засмажка", "description": "Всі гравці скидають цибулю та моркву зі своїх борщів."},

@@ -1936,12 +1936,64 @@ class BorshtManager(AbstractGameManager):
             await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_kuhar_rozbazikav(self, card):
-        # TODO
-        pass
+        self.recipes_revealed = True
 
     async def _handle_shkvarka_mityng_zahysnykiv(self, card):
-        # TODO
-        pass
+        """
+        Handle the 'Mityng Zahysnykiv' shkvarka effect.
+        Effect: Each player discards pork or beef from their borsht.
+        """
+        async def _process_player(player_id):
+            # Find pork or beef in the player's borsht
+            meat_cards = []
+            for ingredient in self.player_borsht[player_id]:
+                # Skip face-down cards
+                if ingredient.get('face_down', False):
+                    continue
+
+                # Check if card is pork or beef
+                if ingredient['id'] in ['pork', 'beef']:
+                    meat_cards.append(ingredient)
+
+            if not meat_cards:
+                return  # No meat to discard
+
+            success, _, discarded_cards = await self._cards_selection_request(
+                owner_id=player_id,
+                cards=meat_cards,
+                select_count=1,
+                reason='mityng_zahysnykiv',
+                request_type='shkvarka_effect_selection',
+            )
+
+            if success and discarded_cards:
+                # Remove the selected card from borsht
+                discarded_card = discarded_cards[0]
+                for idx, ingredient in enumerate(self.player_borsht[player_id]):
+                    if ingredient['uid'] == discarded_card['uid']:
+                        self.player_borsht[player_id].pop(idx)
+                        break
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify about the discard
+                message = {
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'cards': [discarded_card],
+                    'player': jsonable_encoder(serialize_player(self.players[player_id])),
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
+                await self.broadcast_game_update()
+
+        tasks = []
+        # Process each player
+        for player_id in self.players:
+            tasks.append(asyncio.create_task(_process_player(player_id)))
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_yarmarok(self, card):
         """
@@ -2005,14 +2057,9 @@ class BorshtManager(AbstractGameManager):
         """
         # Get ordered list of players
         player_ids = list(self.players.keys())
-        requests = []
+        tasks = []
 
-        # For each player, identify right neighbor and process
-        for i, current_player in enumerate(player_ids):
-            # Find right neighbor (counter-clockwise)
-            right_neighbor_idx = (i - 1) % len(player_ids)
-            right_neighbor = player_ids[right_neighbor_idx]
-
+        async def _process_player(current_player, right_neighbor):
             # Find extra ingredients in right neighbor's borsht
             extra_ingredients = [
                 (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[right_neighbor])
@@ -2020,12 +2067,11 @@ class BorshtManager(AbstractGameManager):
             ]
 
             if not extra_ingredients:
-                continue  # No extra ingredients to discard
+                return  # No extra ingredients to discard
 
             # Request current player to select an extra ingredient to discard
             extra_cards = [card for _, card in extra_ingredients]
-
-            request = self._cards_selection_request(
+            success, _, discarded_cards = await self._cards_selection_request(
                 owner_id=right_neighbor,
                 cards=extra_cards,
                 select_count=1,
@@ -2033,13 +2079,6 @@ class BorshtManager(AbstractGameManager):
                 request_type='shkvarka_effect_selection',
                 selector_id=current_player,
             )
-            task = asyncio.create_task(request)
-            requests.append((current_player, right_neighbor, task))
-
-        for current_player, right_neighbor, task in requests:
-            if not task.done():
-                await task
-            success, _, discarded_cards = task.result()
 
             if success and discarded_cards:
                 # Remove the selected card from borsht
@@ -2060,6 +2099,19 @@ class BorshtManager(AbstractGameManager):
                 }
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
+                await self.broadcast_game_update()
+
+        # For each player, identify right neighbor and process
+        for i, current_player in enumerate(player_ids):
+            # Find right neighbor (counter-clockwise)
+            right_neighbor_idx = (i - 1) % len(player_ids)
+            right_neighbor = player_ids[right_neighbor_idx]
+
+            tasks.append(asyncio.create_task(_process_player(current_player, right_neighbor)))
+
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_den_vrozhaiu(self, card):
         """
@@ -2068,10 +2120,9 @@ class BorshtManager(AbstractGameManager):
         """
         # Get market ingredient IDs
         market_ingredient_ids = set(card['id'] for card in self.market)
-        requests = []
+        tasks = []
 
-        # Process each player
-        for player_id in self.players:
+        async def _process_player(player_id):
             # Find ingredients in player's borsht that are in the market
             matching_ingredients = [
                 (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[player_id])
@@ -2079,25 +2130,17 @@ class BorshtManager(AbstractGameManager):
             ]
 
             if not matching_ingredients:
-                continue  # No matching ingredients to discard
+                return  # No matching ingredients to discard
 
             # Request player to select an ingredient to discard
             matching_cards = [card for _, card in matching_ingredients]
-
-            request = self._cards_selection_request(
+            success, _, discarded_cards = await self._cards_selection_request(
                 owner_id=player_id,
                 cards=matching_cards,
                 select_count=1,
                 reason='den_vrozhaiu',
                 request_type='shkvarka_effect_selection',
             )
-            task = asyncio.create_task(request)
-            requests.append((player_id, task))
-
-        for player_id, task in requests:
-            if not task.done():
-                await task
-            success, _, discarded_cards = task.result()
 
             if success and discarded_cards:
                 # Remove the selected card from borsht
@@ -2118,6 +2161,15 @@ class BorshtManager(AbstractGameManager):
                 }
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
+                await self.broadcast_game_update()
+
+        # Process each player
+        for player_id in self.players:
+            tasks.append(asyncio.create_task(_process_player(player_id)))
+
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_zgorila_zasmazhka(self, card):
         """
@@ -2169,10 +2221,8 @@ class BorshtManager(AbstractGameManager):
         """
         # Get market ingredient IDs
         market_ingredient_ids = set(card['id'] for card in self.market)
-        requests = []
 
-        # Process each player
-        for player_id in self.players:
+        async def _process_player(player_id):
             # Find ingredients in player's borsht that are NOT in the market
             matching_ingredients = [
                 (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[player_id])
@@ -2180,25 +2230,17 @@ class BorshtManager(AbstractGameManager):
             ]
 
             if not matching_ingredients:
-                continue  # No matching ingredients to discard
+                return  # No matching ingredients to discard
 
             # Request player to select an ingredient to discard
             matching_cards = [card for _, card in matching_ingredients]
-
-            request = self._cards_selection_request(
+            success, _, discarded_cards = await self._cards_selection_request(
                 owner_id=player_id,
                 cards=matching_cards,
                 select_count=1,
                 reason='zagubyly_spysok',
                 request_type='shkvarka_effect_selection',
             )
-            task = asyncio.create_task(request)
-            requests.append((player_id, task))
-
-        for player_id, task in requests:
-            if not task.done():
-                await task
-            success, _, discarded_cards = task.result()
 
             if success and discarded_cards:
                 # Remove the selected card from borsht
@@ -2219,10 +2261,89 @@ class BorshtManager(AbstractGameManager):
                 }
                 self.game_messages.append(message)
                 await self.connection_manager.broadcast(self.room_id, message)
+                await self.broadcast_game_update()
+
+        tasks = []
+        # Process each player
+        for player_id in self.players:
+            tasks.append(asyncio.create_task(_process_player(player_id)))
+
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_rozsypaly_specii(self, card):
-        # TODO
-        pass
+        """
+        Handle the 'Rozsypaly Specii' shkvarka effect.
+        Effect: Each player discards an ingredient from the borsht of the player to their left
+        (target can defend with Sour Cream).
+        """
+        async def _process_player(current_player, left_neighbor, card):
+            # Skip if left neighbor has no ingredients or is the first finisher
+            if not self.player_borsht[left_neighbor] or left_neighbor == self.first_finisher:
+                return
+
+            # Find non-face-down ingredients in left neighbor's borsht
+            valid_ingredients = [
+                (idx, ingredient) for idx, ingredient in enumerate(self.player_borsht[left_neighbor])
+                if not ingredient.get('face_down', False)
+            ]
+
+            if not valid_ingredients:
+                return  # No valid ingredients to discard
+
+            # Request current player to select an ingredient to discard
+            valid_cards = [card for _, card in valid_ingredients]
+
+            success, _, discarded_cards = await self._cards_selection_request(
+                owner_id=left_neighbor,
+                cards=valid_cards,
+                select_count=1,
+                reason='rozsypaly_specii',
+                request_type='shkvarka_effect_selection',
+                selector_id=current_player,
+            )
+
+            if success and discarded_cards:
+                # Check if left neighbor can and wants to defend with Sour Cream
+                defense_used = await self._check_sour_cream_defense(left_neighbor, card, discarded_cards)
+                if defense_used:
+                    return
+                # Remove the selected card from borsht
+                discarded_card = discarded_cards[0]
+                for idx, ingredient in enumerate(self.player_borsht[left_neighbor]):
+                    if ingredient['uid'] == discarded_card['uid']:
+                        self.player_borsht[left_neighbor].pop(idx)
+                        break
+
+                # Add to discard pile
+                self.discard_pile.append(discarded_card)
+
+                # Notify about the discard
+                message = {
+                    'type': WebSocketGameMessage.BORSHT_CARD_DISCARDED,
+                    'player': jsonable_encoder(serialize_player(self.players[left_neighbor])),
+                    'cards': [discarded_card],
+                }
+                self.game_messages.append(message)
+                await self.connection_manager.broadcast(self.room_id, message)
+                await self.broadcast_game_update()
+
+        # Get ordered list of players
+        player_ids = list(self.players.keys())
+        tasks = []
+
+        # For each player, identify left neighbor and process
+        for i, current_player in enumerate(player_ids):
+            # Find left neighbor (clockwise)
+            left_neighbor_idx = (i + 1) % len(player_ids)
+            left_neighbor = player_ids[left_neighbor_idx]
+
+            tasks.append(asyncio.create_task(_process_player(current_player, left_neighbor, card)))
+
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_postachalnyk_pereplutav(self, card):
         """
@@ -2278,19 +2399,20 @@ class BorshtManager(AbstractGameManager):
         self.game_settings.special_cards.chili_pepper_discard_count = 2
 
     async def _handle_shkvarka_porvalas_torbynka(self, card):
-        self.game_settings.player_hand_limit = 4
-        tasks = []
-        for player_id in self.players:
-            request = self._handle_hand_limit(player_id)
-            tasks.append((player_id, asyncio.create_task(request)))
-
-        for player_id, task in tasks:
-            if not task.done():
-                await task
-            limit_success, updated_hand = task.result()
+        async def _process_player(player_id):
+            limit_success, updated_hand = await self._handle_hand_limit(player_id)
             if limit_success:
                 self.player_hands[player_id] = updated_hand
             await self.broadcast_game_update()
+
+        self.game_settings.player_hand_limit = 4
+        tasks = []
+        for player_id in self.players:
+            tasks.append(asyncio.create_task(_process_player(player_id)))
+
+        for task in tasks:
+            if not task.done():
+                await task
 
     async def _handle_shkvarka_peresolyly(self, card):
         self.game_settings.extra_cards_allowed = False
