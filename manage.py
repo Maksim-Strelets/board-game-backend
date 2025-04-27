@@ -9,6 +9,7 @@ import sys
 from app.database.base import engine
 from app.database.models import Base
 from app.routes import (
+    healthcheck,
     auth,
     board_games,
     game_rooms,
@@ -39,6 +40,7 @@ app.add_middleware(AuthMiddleware)
 Base.metadata.create_all(bind=engine)
 
 # Include routers
+app.include_router(healthcheck.router)
 app.include_router(auth.router, prefix="/auth", tags=["authentication"])
 app.include_router(board_games.router)
 app.include_router(game_rooms.router)
