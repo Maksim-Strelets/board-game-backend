@@ -54,10 +54,12 @@ class SpecialCardsProps:
     cinnamon_select_count = 1
     ginger_select_count = 2
     chili_pepper_discard_count = 1
+    smetana_count_for_defence = 1
 
 
 class GameSettings:
     general_player_select_timeout = 300
+    cards_to_draw = 2
     borscht_recipes_select_count = 3
     disposable_shkvarka_count = 0
     permanent_shkvarka_count = 0
@@ -66,6 +68,7 @@ class GameSettings:
     player_start_hand_size = 5
     market_exchange_tax = 0
     special_cards = SpecialCardsProps()
+    extra_cards_allowed = True
 
     def __init__(self, **kwargs):
         for name, value in kwargs.items():
@@ -101,6 +104,7 @@ class BorshtManager(AbstractGameManager):
         self.market = []  # Cards available in the market
         self.deck = []  # Main ingredient deck
         self.discard_pile = []  # Discard pile
+        self.pending_shkvarkas = []
 
         # Special states tracking
         self.recipes_revealed = False  # If recipes are revealed due to "Talkative Cook" shkvarka
@@ -299,12 +303,15 @@ class BorshtManager(AbstractGameManager):
             is_move_continues = True
 
         if is_move_continues:
+            await self._process_shkvarkas()
             return success, error_message, self.is_game_over
 
         # Check hand limit and ask player to discard if needed
-        limit_success, updated_hand = await self._handle_hand_limit(player_id, self.player_hands[player_id])
+        limit_success, updated_hand = await self._handle_hand_limit(player_id)
         if limit_success:
             self.player_hands[player_id] = updated_hand
+
+        await self._process_shkvarkas()
 
         # Check if player has completed their recipe
         recipe_completed = self._check_recipe_completion(player_id)
@@ -357,10 +364,16 @@ class BorshtManager(AbstractGameManager):
 
             card = self.deck.pop(0)
             if card.get('type') == 'shkvarka':
-                await self._handle_shkvarka(self.current_player_id, card)
+                self.pending_shkvarkas.append(card)
             else:
                 cards.append(card)
         return cards
+
+    async def _process_shkvarkas(self):
+        if self.pending_shkvarkas:
+            for card in self.pending_shkvarkas:
+                await self._handle_shkvarka(self.current_player_id, card)
+        self.pending_shkvarkas = []
 
     async def _handle_add_ingredient(self, player_id: int, move_data: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """Handle adding an ingredient to the player's borsht."""
@@ -384,6 +397,9 @@ class BorshtManager(AbstractGameManager):
         # Check if it's a special card - these can't be added to borsht
         if card['type'] == 'special':
             return False, "Special ingredients cannot be added to borsht"
+
+        if card['type'] == 'extra' and not self.game_settings.extra_cards_allowed:
+            return False, "Extra cards not allowed"
 
         # Check if card in player's recipe
         if card['type'] in ['regular', 'rare'] and card['id'] not in self.player_recipes[player_id]["ingredients"]:
@@ -412,7 +428,7 @@ class BorshtManager(AbstractGameManager):
     async def _handle_draw_cards(self, player_id: int) -> Tuple[bool, Optional[str]]:
         """Handle drawing 2 cards from the deck."""
         # Draw up to 2 cards
-        cards_to_draw = min(2, len(self.deck))
+        cards_to_draw = self.game_settings.cards_to_draw
         drawn_cards = await self._get_cards_from_deck(cards_to_draw)
 
         if len(drawn_cards) == 0:
@@ -431,18 +447,18 @@ class BorshtManager(AbstractGameManager):
 
         return True, None
 
-    async def _handle_hand_limit(self, player_id: int, current_hand: list) -> Tuple[bool, list]:
+    async def _handle_hand_limit(self, player_id: int) -> Tuple[bool, list]:
         """
         Handle situation when player's hand exceeds the limit.
         Request player to select cards to discard.
 
         Args:
             player_id (int): ID of the player
-            current_hand (list): Current hand of cards
 
         Returns:
             Tuple[bool, list]: Success flag and remaining hand after discards
         """
+        current_hand = self.player_hands[player_id].copy()
         hand_size = len(current_hand)
         limit = self.game_settings.player_hand_limit
 
@@ -472,11 +488,13 @@ class BorshtManager(AbstractGameManager):
         self.discard_pile.extend(discarded_cards)
 
         # Notify about discard
-        await self.connection_manager.send(self.room_id, player_id, {
+        message = {
             'type': WebSocketGameMessage.CARDS_FROM_HAND_DISCARDED,
             'player': jsonable_encoder(serialize_player(self.players[player_id])),
             'cards': discarded_cards,
-        })
+        }
+        await self.connection_manager.broadcast(self.room_id, message)
+        self.game_messages.append(message)
 
         return success, updated_hand
 
@@ -1012,26 +1030,26 @@ class BorshtManager(AbstractGameManager):
             Tuple[bool, Optional[str]]: Success status and error message if any
         """
         # 1. Validate player has the card in hand
-        card_uid = move_data.get('card_id')
-        if not card_uid:
+        pepper_card_uid = move_data.get('card_id')
+        if not pepper_card_uid:
             return False, "Card ID required to play Chili Pepper"
 
-        card_index = None
-        card = None
+        pepper_card_index = None
+        pepper_card = None
         for i, c in enumerate(self.player_hands[player_id]):
-            if c['uid'] == card_uid:
-                card_index = i
-                card = c
+            if c['uid'] == pepper_card_uid:
+                pepper_card_index = i
+                pepper_card = c
                 break
 
-        if card_index is None:
+        if pepper_card_index is None:
             return False, "Card not in hand"
 
-        if card['id'] != 'chili_pepper':
+        if pepper_card['id'] != 'chili_pepper':
             return False, "Selected card is not Chili Pepper"
 
         # Validate required parameters
-        target_player = move_data.get('target_player')
+        target_player = int(move_data.get('target_player'))
         target_cards = move_data.get('target_cards', [])
         action_type = move_data.get('action_type')  # 'steal' or 'discard'
 
@@ -1046,22 +1064,25 @@ class BorshtManager(AbstractGameManager):
             return False, "Invalid target player"
 
         # Validate target cards
-        select_count = self.game_settings.special_cards.chili_pepper_discard_count
+        select_count = min(
+            self.game_settings.special_cards.chili_pepper_discard_count,
+            len(self.player_borsht[target_player]),
+        )
         if len(target_cards) != select_count:
             return False, f"Should be targeting at {select_count} cards"
 
         # 2. Validate all target cards exist in target player's borsht
         target_card_objects = []
-        for card_uid in target_cards:
+        for card in target_cards:
             found = False
             for i, c in enumerate(self.player_borsht[target_player]):
-                if c['uid'] == card_uid:
+                if c['uid'] == card['uid']:
                     target_card_objects.append((i, c))
                     found = True
                     break
 
             if not found:
-                return False, f"Card {card_uid} not found in target player's borsht"
+                return False, f"Card {card['uid']} not found in target player's borsht"
 
         # Broadcast the intended action
         message = {
@@ -1076,7 +1097,7 @@ class BorshtManager(AbstractGameManager):
         await self.connection_manager.broadcast(self.room_id, message)
 
         # 3. Check if target player has and wants to use a Sour Cream defense
-        defense_used = await self._check_sour_cream_defense(target_player, card, [c for _, c in target_card_objects])
+        defense_used = await self._check_sour_cream_defense(target_player, pepper_card, [c for _, c in target_card_objects])
 
         # 4. Process the effect if no defense used
         if defense_used:
@@ -1182,8 +1203,7 @@ class BorshtManager(AbstractGameManager):
         Check if target player has and wants to use a Sour Cream defense card.
         """
         # Check if player has Sour Cream in their hand
-        has_sour_cream = False
-        sour_cream_index = None
+        sour_cream_indexes = []
 
         for i, player_card in enumerate(self.player_hands[target_player]):
             if (
@@ -1191,13 +1211,14 @@ class BorshtManager(AbstractGameManager):
                     and player_card['type'] == 'special'
                     and player_card['effect'] == 'defense'
             ):
-                has_sour_cream = True
-                sour_cream_index = i
-                break
+                sour_cream_indexes.append(i)
+                if len(sour_cream_indexes) >= self.game_settings.special_cards.smetana_count_for_defence:
+                    break
 
-        if not has_sour_cream:
-            return False  # Player doesn't have a defense card
+        if len(sour_cream_indexes) < self.game_settings.special_cards.smetana_count_for_defence:
+            return False  # Player doesn't have enough defense cards
 
+        temp = self.turn_state
         self.turn_state = GameState.WAITING_FOR_DEFENSE
         await self.send_game_update(self.current_player_id)
         # Prepare data for defense request
@@ -1205,7 +1226,7 @@ class BorshtManager(AbstractGameManager):
             'attacker': self.current_player_id,
             'card': card,
             'target_cards': target_cards,
-            'defense_card': 'sour_cream'
+            'defense_cards': [self.player_hands[target_player][idx] for idx in sour_cream_indexes],
         }
 
         # Send defense request to player
@@ -1216,13 +1237,17 @@ class BorshtManager(AbstractGameManager):
             timeout=self.game_settings.general_player_select_timeout,
         )
 
+        self.turn_state = temp
+
         # Check if player chose to use defense
         defense_used = response.get('use_defense', False) and not response.get('timed_out', False)
 
         if defense_used:
             # Remove Sour Cream from player's hand and put it in discard pile
-            defense_card = self.player_hands[target_player].pop(sour_cream_index)
-            self.discard_pile.append(defense_card)
+            sour_cream_indexes.sort(reverse=True)
+            for idx in sour_cream_indexes:
+                defense_card = self.player_hands[target_player].pop(idx)
+                self.discard_pile.append(defense_card)
 
             # Notify all players about the defense
             message = {
@@ -1313,19 +1338,10 @@ class BorshtManager(AbstractGameManager):
     async def _reshuffle_discard(self) -> None:
         """
         Reshuffle discard pile into the ingredient deck.
-        Skip shkvarka cards if present.
         """
-        # Filter out shkvarka cards if applicable
-        regular_cards = [card for card in self.discard_pile  # TODO: shkvarka not going to discard
-                         if 'type' in card and card['type'] != 'shkvarka']
-
-        # Shuffle the regular cards and add to deck
-        random.shuffle(regular_cards)
-        self.deck.extend(regular_cards)
-
-        # Clear discard pile (keeping only shkvarkas)
-        self.discard_pile = [card for card in self.discard_pile
-                             if 'type' in card and card['type'] == 'shkvarka']
+        random.shuffle(self.discard_pile)
+        self.deck.extend(self.discard_pile)
+        self.discard_pile = []
 
         await self.broadcast_game_update()
 
@@ -1612,6 +1628,7 @@ class BorshtManager(AbstractGameManager):
             # Market information
             market=self.market.copy(),
             free_refresh=self._is_market_free_refresh_available(),
+            market_exchange_fee=self.game_settings.market_exchange_tax,
 
             # Discard pile - only show top card
             discard_pile_size=len(self.discard_pile),
@@ -1625,6 +1642,8 @@ class BorshtManager(AbstractGameManager):
             # game settings
             hand_cards_limit=self.game_settings.player_hand_limit,
             market_base_limit=self.game_settings.market_base_capacity,
+            chili_pepper_discard_count=self.game_settings.special_cards.chili_pepper_discard_count,
+            extra_cards_not_allowed=not self.game_settings.extra_cards_allowed,
 
             # Information about other players
             players=dict(),
@@ -1743,6 +1762,7 @@ class BorshtManager(AbstractGameManager):
         return game_stats
 
     async def _handle_shkvarka_blackout(self, card):
+        # TODO
         pass
 
     async def _handle_shkvarka_u_komori_myshi(self, card):
@@ -1916,9 +1936,11 @@ class BorshtManager(AbstractGameManager):
             await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_kuhar_rozbazikav(self, card):
+        # TODO
         pass
 
     async def _handle_shkvarka_mityng_zahysnykiv(self, card):
+        # TODO
         pass
 
     async def _handle_shkvarka_yarmarok(self, card):
@@ -1973,6 +1995,7 @@ class BorshtManager(AbstractGameManager):
             self.player_hands[left_neighbor].append(passed_card)
 
     async def _handle_shkvarka_zlodyi_nevdaha(self, card):
+        # TODO
         pass
 
     async def _handle_shkvarka_vtratyv_niuh(self, card):
@@ -2198,6 +2221,7 @@ class BorshtManager(AbstractGameManager):
                 await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_rozsypaly_specii(self, card):
+        # TODO
         pass
 
     async def _handle_shkvarka_postachalnyk_pereplutav(self, card):
@@ -2244,19 +2268,32 @@ class BorshtManager(AbstractGameManager):
             await self.connection_manager.broadcast(self.room_id, message)
 
     async def _handle_shkvarka_defolt_crisa(self, card):
-        pass
+        self.game_settings.market_exchange_tax = 1
 
     async def _handle_shkvarka_sanepidemstancia(self, card):
-        pass
+        self.game_settings.market_capacity -= 2
+        await self._handle_market_limit()
 
     async def _handle_shkvarka_kayenskyi_perec(self, card):
-        pass
+        self.game_settings.special_cards.chili_pepper_discard_count = 2
 
     async def _handle_shkvarka_porvalas_torbynka(self, card):
-        pass
+        self.game_settings.player_hand_limit = 4
+        tasks = []
+        for player_id in self.players:
+            request = self._handle_hand_limit(player_id)
+            tasks.append((player_id, asyncio.create_task(request)))
+
+        for player_id, task in tasks:
+            if not task.done():
+                await task
+            limit_success, updated_hand = task.result()
+            if limit_success:
+                self.player_hands[player_id] = updated_hand
+            await self.broadcast_game_update()
 
     async def _handle_shkvarka_peresolyly(self, card):
-        pass
+        self.game_settings.extra_cards_allowed = False
 
     async def _handle_shkvarka_molochka_skysla(self, card):
-        pass
+        self.game_settings.special_cards.smetana_count_for_defence = 2
