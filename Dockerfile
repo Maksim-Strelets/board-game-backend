@@ -1,4 +1,4 @@
-FROM python:3.9
+FROM python:3.10
 
 WORKDIR /app
 
@@ -15,4 +15,4 @@ RUN pipenv install --system --deploy
 COPY . .
 
 # Command to run the application
-CMD ["uvicorn", "main:app"]
+CMD ["uvicorn", "manage:app"]
