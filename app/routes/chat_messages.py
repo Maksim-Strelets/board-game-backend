@@ -4,14 +4,13 @@ from typing import List
 
 from app.database.base import get_db
 from app.crud.chat_message import get_room_chat_messages
-from app.middleware.auth import require_auth
+from app.middleware.auth import get_current_user_id
 from app.schemas.chat_message import ChatMessageResponse
 from app.schemas.user import UserResponse
 
 router = APIRouter(
     prefix="/chat",
     tags=["chat"],
-    dependencies=[Depends(require_auth)],
 )
 
 
@@ -19,7 +18,8 @@ router = APIRouter(
 def get_chat_messages(
         room_id: int,
         limit: int = 50,
-        db: Session = Depends(get_db)
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
 ):
     """
     Retrieve recent chat messages for a specific game room

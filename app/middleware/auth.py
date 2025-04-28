@@ -2,7 +2,7 @@ from typing import Optional, Callable, Dict, Any
 import jwt
 from jwt.exceptions import PyJWTError, ExpiredSignatureError
 import logging
-from fastapi import Request, HTTPException, status
+from fastapi import Request, HTTPException, status, Depends
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 import aiohttp
@@ -40,7 +40,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     settings.SECRET_KEY,
                     algorithms=[settings.ALGORITHM]
                 )
-                user_id = payload.get("sub")
+                user_id = payload.get("id")
 
                 if user_id:
                     # Store user_id in request state
@@ -169,13 +169,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return False
 
 
-# Dependency for protected routes
-def require_auth(request: Request):
+def get_current_user_id(request: Request):
     """Dependency to enforce authentication on routes"""
     if not hasattr(request.state, "user_id") or request.state.user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
+            headers={"Authenticate": "Bearer"},
         )
     return request.state.user_id

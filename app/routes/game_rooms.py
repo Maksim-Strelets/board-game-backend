@@ -24,17 +24,21 @@ from app.schemas.game_room import (
     RoomStatus,
 )
 from app.schemas.user import UserResponse
-from app.middleware.auth import require_auth
+from app.middleware.auth import get_current_user_id
 
 router = APIRouter(
     prefix="/board-games/{game_id}/rooms",
     tags=["game-rooms"],
-    dependencies=[Depends(require_auth)],
 )
 
 
 @router.post("/", response_model=GameRoom)
-async def create_game_room_endpoint(game_id: int, game_room: GameRoomCreate, db: Session = Depends(get_db)):
+async def create_game_room_endpoint(
+        game_id: int,
+        game_room: GameRoomCreate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+):
     game_room.game_id = game_id
     try:
         room = create_game_room(db=db, game_room=game_room)
@@ -45,7 +49,13 @@ async def create_game_room_endpoint(game_id: int, game_room: GameRoomCreate, db:
 
 
 @router.get("/", response_model=List[GameRoomWithPlayers])
-def read_game_rooms(game_id: int, skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def read_game_rooms(
+        game_id: int,
+        user_id: int = Depends(get_current_user_id),
+        skip: int = 0,
+        limit: int = 100,
+        db: Session = Depends(get_db),
+):
     rooms = get_game_rooms_by_game(db, game_id=game_id, skip=skip, limit=limit)
 
     # Convert to list of GameRoomWithPlayers
@@ -79,7 +89,12 @@ def read_game_rooms(game_id: int, skip: int = 0, limit: int = 100, db: Session =
 
 
 @router.get("/{room_id}", response_model=GameRoomWithPlayers)
-def read_game_room(game_id: int, room_id: int, db: Session = Depends(get_db)):
+def read_game_room(
+        game_id: int,
+        room_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+):
     db_game_room = get_game_room(db, room_id=room_id)
     if db_game_room is None or db_game_room.game_id != game_id:
         raise HTTPException(status_code=404, detail="Game room not found")
@@ -110,7 +125,13 @@ def read_game_room(game_id: int, room_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/{room_id}", response_model=GameRoom)
-async def update_game_room_endpoint(game_id: int, room_id: int, game_room: GameRoomUpdate, db: Session = Depends(get_db)):
+async def update_game_room_endpoint(
+        game_id: int,
+        room_id: int,
+        game_room: GameRoomUpdate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -127,7 +148,12 @@ async def update_game_room_endpoint(game_id: int, room_id: int, game_room: GameR
 
 
 @router.delete("/{room_id}", response_model=GameRoom)
-async def delete_game_room_endpoint(game_id: int, room_id: int, db: Session = Depends(get_db)):
+async def delete_game_room_endpoint(
+        game_id: int,
+        room_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -144,7 +170,13 @@ async def delete_game_room_endpoint(game_id: int, room_id: int, db: Session = De
 
 
 @router.post("/{room_id}/players", response_model=GameRoomPlayerCreate)
-async def add_player_endpoint(game_id: int, room_id: int, player: GameRoomPlayerCreate, db: Session = Depends(get_db)):
+async def add_player_endpoint(
+        game_id: int,
+        room_id: int,
+        player: GameRoomPlayerCreate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db),
+):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
@@ -162,7 +194,11 @@ async def add_player_endpoint(game_id: int, room_id: int, player: GameRoomPlayer
 
 
 @router.delete("/{room_id}/players/{user_id}", response_model=GameRoomPlayerCreate)
-async def remove_player_endpoint(game_id: int, room_id: int, user_id: int, db: Session = Depends(get_db)):
+async def remove_player_endpoint(
+        game_id: int,
+        room_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)):
     # Validate room belongs to the game
     existing_room = db.query(models.GameRoom).filter(
         models.GameRoom.id == room_id,
