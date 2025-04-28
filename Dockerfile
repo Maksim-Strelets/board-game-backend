@@ -15,7 +15,7 @@ RUN pipenv install --system --deploy
 COPY . .
 
 # Port
-EXPOSE 8000
+EXPOSE 10000
 
 # Command to run the application
 CMD ["python", "manage.py", "runserver"]
