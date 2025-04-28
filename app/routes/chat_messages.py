@@ -4,10 +4,15 @@ from typing import List
 
 from app.database.base import get_db
 from app.crud.chat_message import get_room_chat_messages
+from app.middleware.auth import require_auth
 from app.schemas.chat_message import ChatMessageResponse
 from app.schemas.user import UserResponse
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(
+    prefix="/chat",
+    tags=["chat"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 @router.get("/room/{room_id}", response_model=List[ChatMessageResponse])

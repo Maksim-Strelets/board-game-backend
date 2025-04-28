@@ -8,6 +8,7 @@ import logging
 
 from app.database.base import get_db
 from app.crud.game_room import get_game_rooms_by_game
+from app.middleware.auth import require_auth
 from app.schemas.game_room import GameRoomWithPlayers, GameRoomPlayerResponse
 from app.schemas.user import UserResponse
 from app.websockets.auth import websocket_auth
@@ -15,7 +16,9 @@ from app.websockets.auth import websocket_auth
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_auth)],
+)
 
 room_list_connections: Dict[int, Set[WebSocket]] = {}
 

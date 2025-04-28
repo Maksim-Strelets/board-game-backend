@@ -7,6 +7,7 @@ from typing import Dict
 from starlette import status
 
 from app.database.base import get_db
+from app.middleware.auth import require_auth
 from app.websockets.auth import websocket_auth
 from app.websockets.manager import connection_manager, GameWebSocketMessageType, WebSocketMessageType, WebSocketMessage
 from app.routes.game_rooms_ws import broadcast_room_list_update
@@ -32,7 +33,9 @@ from app.serializers.user import serialize_user
 from app.games.game_manager_factory import GameManagerFactory
 from app.games.abstract_game import AbstractGameManager
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_auth)],
+)
 
 active_games: Dict[int, AbstractGameManager] = {}
 

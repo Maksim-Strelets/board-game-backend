@@ -24,10 +24,12 @@ from app.schemas.game_room import (
     RoomStatus,
 )
 from app.schemas.user import UserResponse
+from app.middleware.auth import require_auth
 
 router = APIRouter(
     prefix="/board-games/{game_id}/rooms",
-    tags=["game-rooms"]
+    tags=["game-rooms"],
+    dependencies=[Depends(require_auth)],
 )
 
 
