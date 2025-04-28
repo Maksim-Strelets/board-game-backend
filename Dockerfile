@@ -15,4 +15,4 @@ RUN pipenv install --system --deploy
 COPY . .
 
 # Command to run the application
-CMD ["uvicorn", "manage:app"]
+CMD ["python", "manage.py", "runserver"]
