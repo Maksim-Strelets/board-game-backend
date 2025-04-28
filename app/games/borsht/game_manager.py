@@ -1710,7 +1710,7 @@ class BorshtManager(AbstractGameManager):
             # Calculate recipe completion percentage
             recipe_ingredients = recipe['ingredients']
             player_ingredient_ids = [card['id'] for card in borsht_ingredients]
-            completed_ingredients = [ing for ing in recipe_ingredients if ing in player_ingredient_ids or ing == 'vinnik_lard']
+            completed_ingredients = [ing for ing in player_ingredient_ids if ing in recipe_ingredients or ing == 'vinnik_lard']
             completion_percentage = (len(completed_ingredients) / len(recipe_ingredients)) * 100
 
             # Calculate points breakdown
