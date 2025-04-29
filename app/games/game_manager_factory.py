@@ -33,6 +33,7 @@ class GameManagerFactory:
             game_names = {
                 4: "tic_tac_toe",
                 6: "borsht",
+                7: "splendor",
                 # Add more games as needed
             }
 
