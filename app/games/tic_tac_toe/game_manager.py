@@ -7,6 +7,7 @@ from fastapi.encoders import jsonable_encoder
 
 from app.games.abstract_game import AbstractGameManager
 from app.serializers.game import serialize_players
+from app.serializers.user import serialize_user
 
 
 class TicTacToeManager(AbstractGameManager):
@@ -148,7 +149,7 @@ class TicTacToeManager(AbstractGameManager):
         winner = None
         if self.winner is not None:
             winner = {
-                "user_data": self.players.get(self.winner, f"Player {self.winner}").user,
+                "user_data": serialize_user(self.players.get(self.winner, f"Player {self.winner}").user),
                 "symbol": self.symbols[self.winner],
             }
 

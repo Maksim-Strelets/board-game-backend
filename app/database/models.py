@@ -95,3 +95,17 @@ class ChatMessage(Base):
 
     def __repr__(self):
         return f"<ChatMessage(id={self.id}, room_id={self.room_id}, user_id={self.user_id})>"
+
+
+class GameResult(Base):
+    __tablename__ = "game_results"
+    id = Column(Integer, primary_key=True, index=True)
+    room_id = Column(Integer, ForeignKey("game_rooms.id"), nullable=False)
+    final_score = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    room = relationship("GameRoom")
+
+    def __repr__(self):
+        return f"<GameResult(id={self.id}, room_id={self.room_id})>"

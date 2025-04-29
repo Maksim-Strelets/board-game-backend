@@ -19,6 +19,8 @@ from app.crud.game_room import (
     update_game_room,
 )
 from app.crud.user import get_user
+from app.crud.game_result import get_game_result, save_game_result
+from app.schemas.game_result import GameResultCreate, GameResultResponse
 from app.schemas.game_room import (
     RoomStatus,
     PlayerStatus,
@@ -283,6 +285,11 @@ async def process_websocket_messages(
                         }
                     )
                     await connection_manager.broadcast(room_id, status_message.to_dict())
+                elif room.status.name == RoomStatus.ENDED.name:
+                    await websocket.send_json({
+                        "type": WebSocketMessageType.GAME_ENDED,
+                        "stats": jsonable_encoder(get_game_result(db, room_id).final_score),
+                    })
                 else:
                     await websocket.send_json({
                         "type": GameWebSocketMessageType.GAME_ERROR,
@@ -383,20 +390,8 @@ async def end_game(db, room_id):
     # Update room status to completed
     room = update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.ENDED))
     await broadcast_room_list_update(db, room.game_id)
+    save_game_result(db, GameResultCreate(
+        room_id=room_id,
+        final_score=jsonable_encoder(active_games[room_id].get_game_stats()),
+    ))
     del active_games[room_id]
-
-    # Update player statuses
-    for player in room.players:
-        new_status = PlayerStatus.NOT_READY
-        updated_player = update_player_status(db, room_id, player.user_id, new_status)
-        status_change_message = WebSocketMessage(
-            type=WebSocketMessageType.PLAYER_STATUS_CHANGED,
-            user_id=player.user_id,
-            room_id=room_id,
-            user=serialize_user(updated_player.user),
-            content={
-                "player": jsonable_encoder(updated_player),
-                "status": new_status.value
-            }
-        )
-        await connection_manager.broadcast(room_id, status_change_message.to_dict())
