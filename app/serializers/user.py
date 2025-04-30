@@ -1,8 +1,8 @@
-from app.schemas.user import UserResponse
+from app.schemas.user import UserInfo
 
 
 def serialize_user(user):
-    return UserResponse(
+    return UserInfo(
         id=user.id,
         username=user.username,
     )

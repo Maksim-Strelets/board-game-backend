@@ -23,8 +23,9 @@ from app.schemas.game_room import (
     GameRoomPlayerCreate,
     RoomStatus,
 )
-from app.schemas.user import UserResponse
+from app.schemas.user import UserInfo
 from app.middleware.auth import get_current_user_id
+from app.serializers.user import serialize_user
 
 router = APIRouter(
     prefix="/board-games/{game_id}/rooms",
@@ -73,13 +74,8 @@ def read_game_rooms(
                     user_id=player.user_id,
                     id=player.id,
                     status=player.status,
-                    user_data=UserResponse(
-                        id=player.user.id,
-                        email=player.user.email,
-                        username=player.user.username,
-                        is_active=player.user.is_active,
-                        created_at=player.user.created_at,
-                    )
+                    user_data=serialize_user(player.user)
+
                 ) for player in room.players
             ]
         )
@@ -112,13 +108,8 @@ def read_game_room(
                 user_id=player.user_id,
                 id=player.id,
                 status=player.status,
-                user_data=UserResponse(
-                    id=player.user.id,
-                    email=player.user.email,
-                    username=player.user.username,
-                    is_active=player.user.is_active,
-                    created_at=player.user.created_at,
-                )
+                user_data=serialize_user(player.user)
+
             ) for player in db_game_room.players
         ]
     )

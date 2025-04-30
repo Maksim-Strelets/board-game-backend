@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from enum import Enum
 
-from app.schemas.user import UserResponse
+from app.schemas.user import UserInfo
 
 
 class RoomStatus(str, Enum):
@@ -53,7 +53,7 @@ class GameRoomPlayerCreate(GameRoomPlayerBase):
 
 class GameRoomPlayerResponse(GameRoomPlayerBase):
     id: int
-    user_data: UserResponse
+    user_data: UserInfo
 
     class Config:
         orm_mode = True

@@ -9,7 +9,7 @@ import logging
 from app.database.base import get_db
 from app.crud.game_room import get_game_rooms_by_game
 from app.schemas.game_room import GameRoomWithPlayers, GameRoomPlayerResponse
-from app.schemas.user import UserResponse
+from app.serializers.user import serialize_user
 from app.websockets.auth import websocket_auth
 
 logging.basicConfig(level=logging.INFO)
@@ -47,13 +47,7 @@ async def get_rooms_data(db: Session, game_id: int) -> list:
                     user_id=player.user_id,
                     id=player.id,
                     status=player.status,
-                    user_data=UserResponse(
-                        id=player.user.id,
-                        email=player.user.email,
-                        username=player.user.username,
-                        is_active=player.user.is_active,
-                        created_at=player.user.created_at,
-                    )
+                    user_data=serialize_user(player.user)
                 ) for player in room.players
             ]
         )
