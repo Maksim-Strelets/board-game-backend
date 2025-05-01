@@ -16,6 +16,7 @@ class MoveAction:
     TAKE_SAME_GEMS = 'take_same_gems'
     RESERVE_CARD = 'reserve_card'
     PURCHASE_CARD = 'purchase_card'
+    SELECT_NOBLE = 'select_noble'
 
 
 class WebSocketGameMessage:
@@ -249,6 +250,9 @@ class SplendorManager(AbstractGameManager):
 
         elif action == MoveAction.PURCHASE_CARD and self.turn_state == GameState.NORMAL_TURN:
             success, error_message = await self._handle_purchase_card(player_id, move_data)
+
+        elif action == MoveAction.SELECT_NOBLE and self.turn_state == GameState.WAITING_FOR_NOBLE_SELECTION:
+            success, error_message = await self.handle_noble_selection(player_id, move_data.get('noble_id'))
 
         else:
             error_message = "Invalid action type or action not allowed in current game state"
@@ -527,7 +531,10 @@ class SplendorManager(AbstractGameManager):
         for color, count in required_payment.items():
             if count > 0:
                 self.player_gems[player_id][color] -= count
-                self.gem_tokens[color if color != 'gold' else 'gold_tokens'] += count
+                if color == 'gold':
+                    self.gold_tokens += count
+                else:
+                    self.gem_tokens[color] += count
 
         # Notify about card purchase
         message = {
