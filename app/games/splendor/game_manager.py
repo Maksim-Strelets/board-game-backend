@@ -17,6 +17,7 @@ class MoveAction:
     RESERVE_CARD = 'reserve_card'
     PURCHASE_CARD = 'purchase_card'
     SELECT_NOBLE = 'select_noble'
+    RETURN_TOKENS = 'return_tokens'
 
 
 class WebSocketGameMessage:
@@ -251,12 +252,6 @@ class SplendorManager(AbstractGameManager):
         elif action == MoveAction.PURCHASE_CARD and self.turn_state == GameState.NORMAL_TURN:
             success, error_message = await self._handle_purchase_card(player_id, move_data)
 
-        elif action == MoveAction.SELECT_NOBLE and self.turn_state == GameState.WAITING_FOR_NOBLE_SELECTION:
-            success, error_message = await self.handle_noble_selection(player_id, move_data.get('noble_id'))
-
-        else:
-            error_message = "Invalid action type or action not allowed in current game state"
-
         # Handle token limit if the action was successful
         if success and sum(self.player_gems[player_id].values()) > self.game_settings.token_limit:
             self.turn_state = GameState.WAITING_FOR_TOKEN_RETURN
@@ -271,7 +266,7 @@ class SplendorManager(AbstractGameManager):
             return success, error_message, self.is_game_over
 
         # Check for noble visits if the action was successful and involved purchasing a card
-        if success and action == MoveAction.PURCHASE_CARD:
+        if success and self.turn_state == GameState.NORMAL_TURN:
             eligible_nobles = self._check_noble_eligibility(player_id)
 
             if len(eligible_nobles) == 1:
@@ -290,6 +285,15 @@ class SplendorManager(AbstractGameManager):
 
                 # Wait for noble selection before proceeding
                 return success, error_message, self.is_game_over
+
+        if action == MoveAction.SELECT_NOBLE and self.turn_state == GameState.WAITING_FOR_NOBLE_SELECTION:
+            success, error_message = await self.handle_noble_selection(player_id, move_data.get('noble_id'))
+
+        elif action == MoveAction.RETURN_TOKENS and self.turn_state == GameState.WAITING_FOR_TOKEN_RETURN:
+            success, error_message = await self.handle_token_return(player_id, move_data.get('tokens', {}))
+
+        else:
+            error_message = "Invalid action type or action not allowed in current game state"
 
         # If move was successful and we're still in normal turn state, advance to next player
         if success and self.turn_state == GameState.NORMAL_TURN:
@@ -697,44 +701,6 @@ class SplendorManager(AbstractGameManager):
 
         # Return to normal turn state and advance to the next player
         self.turn_state = GameState.NORMAL_TURN
-
-        # Check if there are eligible nobles
-        eligible_nobles = self._check_noble_eligibility(player_id)
-
-        if len(eligible_nobles) == 1:
-            # Automatically award the noble
-            noble_tile = eligible_nobles[0]
-            await self._award_noble(player_id, noble_tile)
-        elif len(eligible_nobles) > 1:
-            # Player must choose which noble to receive
-            self.turn_state = GameState.WAITING_FOR_NOBLE_SELECTION
-
-            # Request the player to select a noble
-            await self.connection_manager.send(self.room_id, player_id, {
-                "type": "noble_selection_required",
-                "eligible_nobles": eligible_nobles
-            })
-
-            # Don't advance to next player yet
-            return True, None
-
-        # Check for game end condition
-        self.check_game_over()
-
-        if not self.is_game_over:
-            self.next_player()
-
-            # Announce next player's turn
-            message = {
-                'type': WebSocketGameMessage.NEW_TURN,
-                'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
-            }
-            self.game_messages.append(message)
-            await self.connection_manager.broadcast(self.room_id, message)
-
-        # Broadcast updated game state to all players
-        await self.broadcast_game_update()
-
         return True, None
 
     async def handle_noble_selection(self, player_id: int, noble_id: str) -> Tuple[bool, Optional[str]]:
@@ -768,24 +734,6 @@ class SplendorManager(AbstractGameManager):
 
         # Return to normal turn state and advance to the next player
         self.turn_state = GameState.NORMAL_TURN
-
-        # Check for game end condition
-        self.check_game_over()
-
-        if not self.is_game_over:
-            self.next_player()
-
-            # Announce next player's turn
-            message = {
-                'type': WebSocketGameMessage.NEW_TURN,
-                'player': jsonable_encoder(serialize_player(self.players[self.current_player_id])),
-            }
-            self.game_messages.append(message)
-            await self.connection_manager.broadcast(self.room_id, message)
-
-        # Broadcast updated game state to all players
-        await self.broadcast_game_update()
-
         return True, None
 
     def check_game_over(self) -> None:
