@@ -6,7 +6,7 @@ from app.database.base import get_db
 from app.crud.chat_message import get_room_chat_messages
 from app.middleware.auth import get_current_user_id
 from app.schemas.chat_message import ChatMessageResponse
-from app.schemas.user import UserResponse
+from app.serializers.user import serialize_user
 
 router = APIRouter(
     prefix="/chat",
@@ -33,12 +33,6 @@ def get_chat_messages(
             user_id=msg.user_id,
             content=msg.content,
             timestamp=msg.timestamp,
-            user=UserResponse(
-                id=msg.user.id,
-                email=msg.user.email,
-                username=msg.user.username,
-                is_active=msg.user.is_active,
-                created_at=msg.user.created_at
-            )
+            user=serialize_user(msg.user)
         ) for msg in messages
     ]

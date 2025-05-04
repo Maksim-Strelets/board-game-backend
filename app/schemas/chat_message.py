@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
-from app.schemas.user import UserResponse
+from app.schemas.user import UserInfo
 
 
 class ChatMessageCreate(BaseModel):
@@ -16,7 +16,7 @@ class ChatMessageResponse(BaseModel):
     user_id: int
     content: str
     timestamp: datetime
-    user: Optional[UserResponse] = None
+    user: Optional[UserInfo] = None
 
     class Config:
         orm_mode = True
