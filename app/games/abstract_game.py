@@ -134,3 +134,77 @@ class AbstractGameManager(ABC):
         """Get current player ID."""
         next_player_index = (self.current_player_index + 1) % len(self.players)
         return list(self.players.keys())[next_player_index]
+
+    def dump(self) -> dict:
+        """
+        Serialize the game manager state to a dictionary for persistence.
+
+        Returns:
+            Dictionary containing the serialized game state
+        """
+        # Convert players dict to serializable form (player_id -> player data)
+        serialized_players = {}
+        for player_id, player in self.players.items():
+            # Assuming player objects have a to_dict method or similar
+            # If not, you'll need to create a serialization method appropriate for your player objects
+            serialized_players[str(player_id)] = player.to_dict() if hasattr(player, 'to_dict') else {
+                'user_id': player.user_id,
+                'username': getattr(player, 'username', ''),
+                # Add other relevant player attributes here
+            }
+
+        return {
+            'room_id': self.room_id,
+            'players': serialized_players,
+            'game_state': self.game_state,
+            'current_player_index': self.current_player_index,
+            'is_game_over': self.is_game_over,
+            'winner': self.winner,
+            'game_messages': self.game_messages,
+            'pending_requests': self.pending_requests,
+            'sent_requests': self.sent_requests
+        }
+
+    @classmethod
+    def load(cls, db, room, connection_manager: ConnectionManager, saved_state: dict) -> 'AbstractGameManager':
+        """
+        Create a new game manager instance from a saved state.
+
+        Args:
+            db: Database connection
+            room: Room object
+            connection_manager: WebSocket connection manager
+            saved_state: Dictionary containing the serialized game state
+
+        Returns:
+            New game manager instance with restored state
+        """
+        # Create a new instance
+        instance = cls(db, room, connection_manager, {})
+
+        # Restore the game state
+        instance.room_id = saved_state.get('room_id', room.id)
+        instance.game_state = saved_state.get('game_state', {})
+        instance.current_player_index = saved_state.get('current_player_index', 0)
+        instance.is_game_over = saved_state.get('is_game_over', False)
+        instance.winner = saved_state.get('winner', None)
+        instance.game_messages = saved_state.get('game_messages', [])
+        instance.pending_requests = saved_state.get('pending_requests', {})
+        instance.sent_requests = saved_state.get('sent_requests', {})
+
+        # The players attribute might need special handling depending on your player model
+        # This is a basic implementation assuming simple player objects
+        saved_players = saved_state.get('players', {})
+        if saved_players and not instance.players:
+            instance.players = {}
+            for player_id, player_data in saved_players.items():
+                # You might need to reconstruct player objects properly here
+                # depending on how they're defined in your application
+                player_id_int = int(player_id)
+                # Find the player in the room.players list
+                for player in room.players:
+                    if player.user_id == player_id_int:
+                        instance.players[player_id_int] = player
+                        break
+
+        return instance

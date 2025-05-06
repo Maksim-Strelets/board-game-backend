@@ -953,3 +953,157 @@ class SplendorManager(AbstractGameManager):
         }
 
         return game_stats
+
+    def dump(self) -> dict:
+        """
+        Serialize the game manager state to a dictionary for persistence.
+
+        Returns:
+            Dictionary containing the serialized game state
+        """
+        # First call the parent class dump method to get basic state
+        base_state = super().dump()
+
+        # Add Splendor-specific state
+        splendor_state = {
+            # Game settings
+            'game_settings': {
+                'token_limit': self.game_settings.token_limit,
+                'prestige_to_win': self.game_settings.prestige_to_win,
+                'noble_tiles_count': self.game_settings.noble_tiles_count,
+                'cards_visible_per_level': self.game_settings.cards_visible_per_level,
+                'gem_tokens_for_2p': self.game_settings.gem_tokens_for_2p,
+                'gem_tokens_for_3p': self.game_settings.gem_tokens_for_3p,
+                'gem_tokens_for_4p': self.game_settings.gem_tokens_for_4p,
+                'gold_tokens': self.game_settings.gold_tokens,
+                'noble_tiles_for_2p': self.game_settings.noble_tiles_for_2p,
+                'noble_tiles_for_3p': self.game_settings.noble_tiles_for_3p,
+                'noble_tiles_for_4p': self.game_settings.noble_tiles_for_4p,
+            },
+
+            # Game state
+            'is_started': self.is_started,
+            'start_time': self.start_time,
+            'turn_state': self.turn_state,
+            'gem_tokens': self.gem_tokens,
+            'gold_tokens': self.gold_tokens,
+            'card_decks': self.card_decks,
+            'visible_cards': self.visible_cards,
+            'noble_tiles': self.noble_tiles,
+
+            # Player state
+            'player_gems': self.player_gems,
+            'player_reserved_cards': self.player_reserved_cards,
+            'player_purchased_cards': self.player_purchased_cards,
+            'player_nobles': self.player_nobles,
+            'moves_count': self.moves_count,
+        }
+
+        # Merge the base state with Splendor-specific state
+        base_state.update(splendor_state)
+
+        return base_state
+
+    @classmethod
+    def load(cls, db, room, connection_manager, saved_state: dict) -> 'SplendorManager':
+        """
+        Create a new Splendor game manager instance from a saved state.
+
+        Args:
+            db: Database connection
+            room: Room object
+            connection_manager: WebSocket connection manager
+            saved_state: Dictionary containing the serialized game state
+
+        Returns:
+            New SplendorManager instance with restored state
+        """
+        # Extract game settings from saved state
+        game_settings = saved_state.get('game_settings', {})
+
+        # Create a new instance with the saved settings
+        instance = cls(db, room, connection_manager, game_settings)
+
+        # Set the flag indicating the game has already been started
+        instance.is_started = saved_state.get('is_started', False)
+
+        # Restore basic game state
+        instance.room_id = saved_state.get('room_id', room.id)
+        instance.game_state = saved_state.get('game_state', {})
+        instance.current_player_index = saved_state.get('current_player_index', 0)
+        instance.is_game_over = saved_state.get('is_game_over', False)
+        instance.winner = saved_state.get('winner', None)
+        instance.game_messages = saved_state.get('game_messages', [])
+        instance.pending_requests = saved_state.get('pending_requests', {})
+        instance.sent_requests = saved_state.get('sent_requests', {})
+
+        # Restore player mappings
+        saved_players = saved_state.get('players', {})
+        if saved_players and not instance.players:
+            instance.players = {}
+            for player_id, player_data in saved_players.items():
+                player_id_int = int(player_id) if isinstance(player_id, str) else player_id
+                # Find the player in the room.players list
+                for player in room.players:
+                    if player.user_id == player_id_int:
+                        instance.players[player_id_int] = player
+                        break
+
+        # Restore Splendor-specific state
+        instance.start_time = saved_state.get('start_time', time.time())
+        instance.turn_state = saved_state.get('turn_state', GameState.NORMAL_TURN)
+        instance.gem_tokens = saved_state.get('gem_tokens', {})
+        instance.gold_tokens = saved_state.get('gold_tokens', 0)
+        temp = saved_state.get('card_decks', {1: [], 2: [], 3: []})
+        for key in temp:
+            instance.card_decks[int(key)] = temp[key]
+        temp = saved_state.get('visible_cards', {1: [], 2: [], 3: []})
+        for key in temp:
+            instance.visible_cards[int(key)] = temp[key]
+        instance.noble_tiles = saved_state.get('noble_tiles', [])
+
+        # Restore player state
+        instance.player_gems = saved_state.get('player_gems', {})
+        instance.player_reserved_cards = saved_state.get('player_reserved_cards', {})
+        instance.player_purchased_cards = saved_state.get('player_purchased_cards', {})
+        instance.player_nobles = saved_state.get('player_nobles', {})
+        instance.moves_count = saved_state.get('moves_count', {})
+
+        # Ensure all player IDs are properly restored as integers
+        for attr in ['player_gems', 'player_reserved_cards', 'player_purchased_cards', 'player_nobles', 'moves_count']:
+            data = getattr(instance, attr, {})
+            if isinstance(data, dict):
+                # Convert string keys back to integers if needed
+                converted_data = {}
+                for k, v in data.items():
+                    key = int(k) if isinstance(k, str) else k
+                    converted_data[key] = v
+                setattr(instance, attr, converted_data)
+
+        # Ensure new players have their state initialized if they weren't in the saved state
+        for player_id in instance.players:
+            # Initialize player gems if not present
+            if player_id not in instance.player_gems:
+                instance.player_gems[player_id] = {
+                    'white': 0, 'blue': 0, 'green': 0, 'red': 0, 'black': 0, 'gold': 0
+                }
+
+            # Initialize player reserved cards if not present
+            if player_id not in instance.player_reserved_cards:
+                instance.player_reserved_cards[player_id] = []
+
+            # Initialize player purchased cards if not present
+            if player_id not in instance.player_purchased_cards:
+                instance.player_purchased_cards[player_id] = {
+                    'white': [], 'blue': [], 'green': [], 'red': [], 'black': []
+                }
+
+            # Initialize player nobles if not present
+            if player_id not in instance.player_nobles:
+                instance.player_nobles[player_id] = []
+
+            # Initialize moves count if not present
+            if player_id not in instance.moves_count:
+                instance.moves_count[player_id] = 0
+
+        return instance

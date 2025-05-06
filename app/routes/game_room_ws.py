@@ -19,8 +19,18 @@ from app.crud.game_room import (
     update_game_room,
 )
 from app.crud.user import get_user
-from app.crud.game_result import get_game_result, save_game_result
-from app.schemas.game_result import GameResultCreate, GameResultResponse
+from app.crud.game_result import (
+    get_game_result,
+    save_game_result,
+    load_game_state,
+    dump_game_state,
+)
+from app.schemas.game_result import (
+    GameResultCreate,
+    GameResultResponse,
+    GameStateCreate,
+    GameStateResponse,
+)
 from app.schemas.game_room import (
     RoomStatus,
     PlayerStatus,
@@ -261,6 +271,9 @@ async def process_websocket_messages(
 
             elif message_type == "get_game_state":
                 # Check if game is active
+                if room_id not in active_games and room.status.name == RoomStatus.IN_PROGRESS.name:
+                    load_game(db, room_id)
+
                 if room_id in active_games:
                     game_state = active_games[room_id].get_state(user_id)
                     await websocket.send_json({
@@ -272,19 +285,6 @@ async def process_websocket_messages(
                             "type": WebSocketMessageType.GAME_ENDED,
                             "stats": jsonable_encoder(active_games[room_id].get_game_stats()),
                         })
-                elif room.status.name == RoomStatus.IN_PROGRESS.name:
-                    update_game_room(db, room_id, GameRoomUpdate(status=RoomStatus.WAITING))
-                    await broadcast_room_list_update(db, room.game_id)
-                    status_message = WebSocketMessage(
-                        type=WebSocketMessageType.ROOM_STATUS_CHANGED,
-                        user_id=user_id,
-                        room_id=room_id,
-                        user=user_public,
-                        content={
-                            "status": RoomStatus.WAITING
-                        }
-                    )
-                    await connection_manager.broadcast(room_id, status_message.to_dict())
                 elif room.status.name == RoomStatus.ENDED.name:
                     await websocket.send_json({
                         "type": WebSocketMessageType.GAME_ENDED,
@@ -342,6 +342,12 @@ async def process_websocket_messages(
         ):
             await end_game(db, room_id)
 
+        if (
+                room_id in active_games and
+                not connection_manager.active_connections.get(room_id, {})
+        ):
+            dump_game(db, room_id)
+
 
 async def start_game(db, room_id, game_settings):
     # Get room data to determine players
@@ -395,3 +401,31 @@ async def end_game(db, room_id):
         final_score=jsonable_encoder(active_games[room_id].get_game_stats()),
     ))
     del active_games[room_id]
+
+
+def dump_game(db, room_id):
+    if room_id not in active_games:
+        print("Cannot dump game state for room", room_id)
+        return
+    try:
+        dump_game_state(db, GameStateCreate(
+            room_id=room_id,
+            state=active_games[room_id].dump()
+        ))
+        del active_games[room_id]
+    except Exception as e:
+        print("Error occurred while dumping game state", e)
+
+
+def load_game(db, room_id):
+    if room_id in active_games:
+        print(f"Cannot load game state for room {room_id}. Game already loaded")
+        return
+    try:
+        game = load_game_state(db, room_id)
+        room = get_game_room(db, room_id)
+        game_manager = GameManagerFactory.create_game_manager(db, room, connection_manager, {})
+        game_manager = game_manager.load(db, room, connection_manager, game.state)
+        active_games[room_id] = game_manager
+    except Exception as e:
+        print("Error occurred while loading game state", e)

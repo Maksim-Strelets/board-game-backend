@@ -15,3 +15,18 @@ class GameResultResponse(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class GameStateCreate(BaseModel):
+    room_id: int
+    state: dict
+
+
+class GameStateResponse(BaseModel):
+    id: int
+    room_id: int
+    state: dict
+    timestamp: datetime
+
+    class Config:
+        orm_mode = True

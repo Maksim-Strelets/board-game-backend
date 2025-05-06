@@ -46,16 +46,7 @@ class GameState:
     WAITING_FOR_DISCARD = 'waiting_for_discard'
     WAITING_FOR_EXCHANGE = 'waiting_for_exchange'
     GAME_OVER = 'game_over'
-
-
-class SpecialCardsProps:
-    olive_oil_look_count = 5
-    olive_oil_select_count = 2
-    cinnamon_select_count = 1
-    ginger_select_count = 2
-    chili_pepper_discard_count = 1
-    smetana_count_for_defence = 1
-
+    
 
 class GameSettings:
     general_player_select_timeout = 300
@@ -67,12 +58,20 @@ class GameSettings:
     player_hand_limit = 8
     player_start_hand_size = 5
     market_exchange_tax = 0
-    special_cards = SpecialCardsProps()
     extra_cards_allowed = True
+    market_base_capacity = 8
+    
+    # special cards
+    olive_oil_look_count = 5
+    olive_oil_select_count = 2
+    cinnamon_select_count = 1
+    ginger_select_count = 2
+    chili_pepper_discard_count = 1
+    smetana_count_for_defence = 1
 
     def __init__(self, **kwargs):
         for name, value in kwargs.items():
-            if not self.__getattribute__(name) is None:
+            if self.__getattribute__(name) is not None:
                 self.__setattr__(name, value)
 
         self.market_base_capacity = self.market_capacity
@@ -702,7 +701,7 @@ class BorshtManager(AbstractGameManager):
             return True, "No cards in discard pile"
 
         # Determine how many cards player can select (limited by discard pile size)
-        max_select = min(self.game_settings.special_cards.cinnamon_select_count, len(self.discard_pile))
+        max_select = min(self.game_settings.cinnamon_select_count, len(self.discard_pile))
 
         # Use the general discard request in "selection mode"
         success, remaining_discard, selected_cards = await self._cards_selection_request(
@@ -736,8 +735,8 @@ class BorshtManager(AbstractGameManager):
         return True, None
 
     async def _handle_olive_oil(self, player_id):
-        look_count = self.game_settings.special_cards.olive_oil_look_count
-        select_count = self.game_settings.special_cards.olive_oil_select_count
+        look_count = self.game_settings.olive_oil_look_count
+        select_count = self.game_settings.olive_oil_select_count
 
         if len(self.deck) < select_count:
             return False, "Not enough cards in deck"
@@ -788,7 +787,7 @@ class BorshtManager(AbstractGameManager):
         self.turn_state = GameState.WAITING_FOR_SELECTION
         await self.send_game_update(player_id)
         # Determine how many cards player can select (limited by market size)
-        max_select = min(self.game_settings.special_cards.ginger_select_count, len(self.market))
+        max_select = min(self.game_settings.ginger_select_count, len(self.market))
 
         # Use the general discard request in "selection mode"
         success, remaining_market, selected_cards = await self._cards_selection_request(
@@ -1065,7 +1064,7 @@ class BorshtManager(AbstractGameManager):
 
         # Validate target cards
         select_count = min(
-            self.game_settings.special_cards.chili_pepper_discard_count,
+            self.game_settings.chili_pepper_discard_count,
             len(self.player_borsht[target_player]),
         )
         if len(target_cards) != select_count:
@@ -1212,10 +1211,10 @@ class BorshtManager(AbstractGameManager):
                     and player_card['effect'] == 'defense'
             ):
                 sour_cream_indexes.append(i)
-                if len(sour_cream_indexes) >= self.game_settings.special_cards.smetana_count_for_defence:
+                if len(sour_cream_indexes) >= self.game_settings.smetana_count_for_defence:
                     break
 
-        if len(sour_cream_indexes) < self.game_settings.special_cards.smetana_count_for_defence:
+        if len(sour_cream_indexes) < self.game_settings.smetana_count_for_defence:
             return False  # Player doesn't have enough defense cards
 
         temp = self.turn_state
@@ -1642,7 +1641,7 @@ class BorshtManager(AbstractGameManager):
             # game settings
             hand_cards_limit=self.game_settings.player_hand_limit,
             market_base_limit=self.game_settings.market_base_capacity,
-            chili_pepper_discard_count=self.game_settings.special_cards.chili_pepper_discard_count,
+            chili_pepper_discard_count=self.game_settings.chili_pepper_discard_count,
             extra_cards_not_allowed=not self.game_settings.extra_cards_allowed,
 
             # Information about other players
@@ -2396,7 +2395,7 @@ class BorshtManager(AbstractGameManager):
         await self._handle_market_limit()
 
     async def _handle_shkvarka_kayenskyi_perec(self, card):
-        self.game_settings.special_cards.chili_pepper_discard_count = 2
+        self.game_settings.chili_pepper_discard_count = 2
 
     async def _handle_shkvarka_porvalas_torbynka(self, card):
         async def _process_player(player_id):
@@ -2418,4 +2417,131 @@ class BorshtManager(AbstractGameManager):
         self.game_settings.extra_cards_allowed = False
 
     async def _handle_shkvarka_molochka_skysla(self, card):
-        self.game_settings.special_cards.smetana_count_for_defence = 2
+        self.game_settings.smetana_count_for_defence = 2
+
+    def dump(self) -> dict:
+        """
+        Serialize the game manager state to a dictionary for persistence.
+
+        Returns:
+            Dictionary containing the serialized game state
+        """
+        # First call the parent class dump method to get basic state
+        base_state = super().dump()
+
+        # Add Borsht-specific state
+        borsht_state = {
+            # Game settings
+            'game_settings': {
+                'cards_to_draw': self.game_settings.cards_to_draw,
+                'borscht_recipes_select_count': self.game_settings.borscht_recipes_select_count,
+                'disposable_shkvarka_count': self.game_settings.disposable_shkvarka_count,
+                'permanent_shkvarka_count': self.game_settings.permanent_shkvarka_count,
+                'market_capacity': self.game_settings.market_capacity,
+                'market_base_capacity': self.game_settings.market_base_capacity,
+                'player_hand_limit': self.game_settings.player_hand_limit,
+                'player_start_hand_size': self.game_settings.player_start_hand_size,
+                'market_exchange_tax': self.game_settings.market_exchange_tax,
+                'extra_cards_allowed': self.game_settings.extra_cards_allowed,
+                'olive_oil_look_count': self.game_settings.olive_oil_look_count,
+                'olive_oil_select_count': self.game_settings.olive_oil_select_count,
+                'cinnamon_select_count': self.game_settings.cinnamon_select_count,
+                'ginger_select_count': self.game_settings.ginger_select_count,
+                'chili_pepper_discard_count': self.game_settings.chili_pepper_discard_count,
+                'smetana_count_for_defence': self.game_settings.smetana_count_for_defence,
+            },
+
+            # Game state
+            'is_started': self.is_started,
+            'start_time': self.start_time,
+            'turn_state': self.turn_state,
+            'market': self.market,
+            'deck': self.deck,
+            'discard_pile': self.discard_pile,
+            'pending_shkvarkas': self.pending_shkvarkas,
+            'recipes_revealed': self.recipes_revealed,
+            'game_ending': self.game_ending,
+            'first_finisher': self.first_finisher,
+            'active_shkvarkas': self.active_shkvarkas,
+            'recipes': self.recipes if hasattr(self, 'recipes') else [],
+
+            # Player state
+            'player_recipes': self.player_recipes,
+            'player_borsht': self.player_borsht,
+            'player_hands': self.player_hands,
+            'moves_count': self.moves_count,
+        }
+
+        # Merge the base state with Borsht-specific state
+        base_state.update(borsht_state)
+
+        return base_state
+
+    @classmethod
+    def load(cls, db, room, connection_manager, saved_state: dict) -> 'BorshtManager':
+        """
+        Create a new Borsht game manager instance from a saved state.
+
+        Args:
+            db: Database connection
+            room: Room object
+            connection_manager: WebSocket connection manager
+            saved_state: Dictionary containing the serialized game state
+
+        Returns:
+            New BorshtManager instance with restored state
+        """
+        # Extract game settings from saved state
+        game_settings = saved_state.get('game_settings', {})
+
+        # Create a new instance with the saved settings
+        instance = cls(db, room, connection_manager, game_settings)
+
+        # Set the flag indicating the game has already been started
+        instance.is_started = saved_state.get('is_started', False)
+
+        # Restore base state using parent class load method
+        super(BorshtManager, cls).load(db, room, connection_manager, saved_state)
+
+        # Restore Borsht-specific state
+        instance.start_time = saved_state.get('start_time', time.time())
+        instance.turn_state = saved_state.get('turn_state', GameState.NORMAL_TURN)
+        instance.market = saved_state.get('market', [])
+        instance.deck = saved_state.get('deck', [])
+        instance.discard_pile = saved_state.get('discard_pile', [])
+        instance.pending_shkvarkas = saved_state.get('pending_shkvarkas', [])
+        instance.recipes_revealed = saved_state.get('recipes_revealed', False)
+        instance.game_ending = saved_state.get('game_ending', False)
+        instance.first_finisher = saved_state.get('first_finisher')
+        instance.active_shkvarkas = saved_state.get('active_shkvarkas', [])
+
+        # Restore player state
+        temp = saved_state.get('player_recipes', {})
+        for key in temp:
+            instance.player_recipes[int(key)] = temp[key]
+        temp = saved_state.get('player_borsht', {})
+        for key in temp:
+            instance.player_borsht[int(key)] = temp[key]
+        temp = saved_state.get('player_hands', {})
+        for key in temp:
+            instance.player_hands[int(key)] = temp[key]
+        temp = saved_state.get('moves_count', {})
+        for key in temp:
+            instance.moves_count[int(key)] = temp[key]
+
+        # Restore recipes if available
+        if 'recipes' in saved_state:
+            instance.recipes = saved_state['recipes']
+
+        # Ensure all player IDs are properly restored as integers
+        for attr in ['player_recipes', 'player_borsht', 'player_hands', 'moves_count']:
+            data = getattr(instance, attr, {})
+            if isinstance(data, dict):
+                # Convert string keys back to integers if needed
+                converted_data = {}
+                for k, v in data.items():
+                    key = int(k) if isinstance(k, str) else k
+                    converted_data[key] = v
+                setattr(instance, attr, converted_data)
+
+        return instance

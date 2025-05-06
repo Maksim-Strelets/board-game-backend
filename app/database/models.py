@@ -101,7 +101,8 @@ class GameResult(Base):
     __tablename__ = "game_results"
     id = Column(Integer, primary_key=True, index=True)
     room_id = Column(Integer, ForeignKey("game_rooms.id"), nullable=False)
-    final_score = Column(String, nullable=False)
+    final_score = Column(String)
+    game_state = Column(String)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     # Relationships
